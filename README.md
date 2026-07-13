@@ -1,0 +1,156 @@
+# Email Platform
+
+Production-grade SaaS Email Marketing Platform — enterprise-level, scalable, and modular.
+
+**Phase 1** delivers the project foundation: Django backend scaffolding, configuration, custom User model, deployment tooling, and a React frontend scaffold.
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Backend | Python 3.13, Django 5.x, DRF, JWT |
+| Database | MySQL 8 |
+| Cache / Queue | Redis, Celery, Celery Beat |
+| Frontend | React, TypeScript, Vite, Tailwind CSS |
+| Deployment | Ubuntu 24.04, Gunicorn, Nginx, Supervisor |
+
+## Project Structure
+
+```
+email_platform/
+├── backend/                 # Django project
+│   ├── config/              # Settings, URLs, Celery, WSGI
+│   ├── accounts/            # Custom User model
+│   ├── core/                # Shared utilities
+│   ├── campaigns/           # (Phase 2+)
+│   ├── subscribers/         # (Phase 2+)
+│   ├── smtp_servers/        # (Phase 2+)
+│   ├── domains/             # (Phase 2+)
+│   ├── tracking/            # (Phase 2+)
+│   ├── analytics/           # (Phase 2+)
+│   ├── sending/             # (Phase 2+)
+│   ├── reports/             # (Phase 2+)
+│   ├── email_templates/     # (Phase 2+)
+│   ├── settings_app/        # (Phase 2+)
+│   ├── billing/             # (Phase 2+)
+│   ├── api/                 # (Phase 2+)
+│   ├── manage.py
+│   └── requirements.txt
+├── frontend/                # React SPA scaffold
+├── deployment/              # Gunicorn, Nginx, Supervisor
+├── docs/                    # Documentation
+├── scripts/                 # Setup scripts
+├── .env.example
+└── README.md
+```
+
+## Quick Start (Development)
+
+### Prerequisites
+
+- Python 3.13
+- Node.js 20+
+- MySQL 8
+- Redis
+
+### Backend
+
+```bash
+# Clone and configure
+cp .env.example .env
+# Edit .env with your MySQL and Redis credentials
+
+# Setup (Linux/macOS)
+chmod +x scripts/setup_dev.sh
+./scripts/setup_dev.sh
+
+# Or manually:
+python3.13 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r backend/requirements.txt
+cd backend
+export DJANGO_SETTINGS_MODULE=config.settings.development
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver
+```
+
+### Celery (separate terminals)
+
+```bash
+cd backend
+celery -A config worker -l INFO
+celery -A config beat -l INFO
+```
+
+### Frontend
+
+```bash
+cd frontend
+cp .env.example .env
+npm install
+npm run dev
+```
+
+## Production Deployment
+
+See deployment guides:
+
+- [Nginx Guide](deployment/nginx/NGINX_GUIDE.md)
+- [Supervisor Guide](deployment/supervisor/SUPERVISOR_GUIDE.md)
+- Gunicorn config: `deployment/gunicorn/gunicorn.conf.py`
+
+```bash
+chmod +x scripts/setup_prod.sh
+./scripts/setup_prod.sh
+```
+
+## Configuration
+
+Environment variables are defined in `.env.example`. Key settings:
+
+| Variable | Description |
+|----------|-------------|
+| `DJANGO_SECRET_KEY` | Django secret key |
+| `DJANGO_SETTINGS_MODULE` | `config.settings.development` or `config.settings.production` |
+| `DB_*` | MySQL connection |
+| `REDIS_URL` | Redis cache |
+| `CELERY_BROKER_URL` | Celery message broker |
+| `JWT_*` | Token lifetimes |
+| `CORS_ALLOWED_ORIGINS` | Frontend origins |
+
+## Django Apps (Phase 1)
+
+All apps are registered and ready. Only `accounts.User` is implemented as a model.
+
+## Phase 1 Scope
+
+- Project structure and configuration
+- Custom User model (`accounts.User`)
+- JWT / DRF / CORS / Celery configuration (no endpoints)
+- Deployment configs (Gunicorn, Nginx, Supervisor)
+- Frontend scaffold
+
+## Phase 2 — Authentication (Complete)
+
+See [docs/PHASE_2_AUTHENTICATION.md](docs/PHASE_2_AUTHENTICATION.md).
+
+## Phase 3 — Dashboard UI (Complete)
+
+React admin panel with login, sidebar, dashboard, and module shells.
+
+See [docs/PHASE_3_DASHBOARD.md](docs/PHASE_3_DASHBOARD.md).
+
+## Phase 4 — Subscribers (Complete)
+
+Full subscriber module with Django API and React UI.
+
+See [docs/PHASE_4_SUBSCRIBERS.md](docs/PHASE_4_SUBSCRIBERS.md).
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+## License
+
+Proprietary — All rights reserved.

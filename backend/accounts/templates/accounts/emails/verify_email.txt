@@ -1,0 +1,11 @@
+Hello {{ user.first_name|default:user.email }},
+
+Please verify your email address by visiting the link below:
+
+{{ verify_url }}
+
+This link expires in {{ expiry_hours }} hours.
+
+If you did not create an account, you can safely ignore this email.
+
+— Email Platform Team

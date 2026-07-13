@@ -1,0 +1,38 @@
+[project]
+name = "email-platform"
+version = "0.1.0"
+description = "Production-grade SaaS Email Marketing Platform"
+readme = "../README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "accounts",
+    "analytics",
+    "api",
+    "billing",
+    "campaigns",
+    "config",
+    "core",
+    "domains",
+    "email_templates",
+    "reports",
+    "sending",
+    "settings_app",
+    "smtp_servers",
+    "subscribers",
+    "tracking",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py"]
+pythonpath = ["."]

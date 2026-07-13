@@ -1,0 +1,21 @@
+name,host,port,username,password,from_email,from_name,encryption,hourly_limit,daily_limit,verify_ssl,is_active,is_default
+Domain1 Mailbox 1,mail.domain1.com,465,user1@domain1.com,YOUR_PASSWORD,user1@domain1.com,Marketing Team,ssl,60,1000,false,true,false
+Domain1 Mailbox 2,mail.domain1.com,465,user2@domain1.com,YOUR_PASSWORD,user2@domain1.com,Marketing Team,ssl,60,1000,false,true,false
+Domain1 Mailbox 3,mail.domain1.com,465,user3@domain1.com,YOUR_PASSWORD,user3@domain1.com,Marketing Team,ssl,60,1000,false,true,false
+Domain1 Mailbox 4,mail.domain1.com,465,user4@domain1.com,YOUR_PASSWORD,user4@domain1.com,Marketing Team,ssl,60,1000,false,true,false
+Domain2 Mailbox 1,mail.domain2.com,465,user1@domain2.com,YOUR_PASSWORD,user1@domain2.com,Sales Team,ssl,60,1000,false,true,false
+Domain2 Mailbox 2,mail.domain2.com,465,user2@domain2.com,YOUR_PASSWORD,user2@domain2.com,Sales Team,ssl,60,1000,false,true,false
+Domain2 Mailbox 3,mail.domain2.com,465,user3@domain2.com,YOUR_PASSWORD,user3@domain2.com,Sales Team,ssl,60,1000,false,true,false
+Domain2 Mailbox 4,mail.domain2.com,465,user4@domain2.com,YOUR_PASSWORD,user4@domain2.com,Sales Team,ssl,60,1000,false,true,false
+Domain3 Mailbox 1,mail.domain3.com,465,user1@domain3.com,YOUR_PASSWORD,user1@domain3.com,Support,ssl,60,1000,false,true,false
+Domain3 Mailbox 2,mail.domain3.com,465,user2@domain3.com,YOUR_PASSWORD,user2@domain3.com,Support,ssl,60,1000,false,true,false
+Domain3 Mailbox 3,mail.domain3.com,465,user3@domain3.com,YOUR_PASSWORD,user3@domain3.com,Support,ssl,60,1000,false,true,false
+Domain3 Mailbox 4,mail.domain3.com,465,user4@domain3.com,YOUR_PASSWORD,user4@domain3.com,Support,ssl,60,1000,false,true,false
+Domain4 Mailbox 1,mail.domain4.com,465,user1@domain4.com,YOUR_PASSWORD,user1@domain4.com,Info,ssl,60,1000,false,true,false
+Domain4 Mailbox 2,mail.domain4.com,465,user2@domain4.com,YOUR_PASSWORD,user2@domain4.com,Info,ssl,60,1000,false,true,false
+Domain4 Mailbox 3,mail.domain4.com,465,user3@domain4.com,YOUR_PASSWORD,user3@domain4.com,Info,ssl,60,1000,false,true,false
+Domain4 Mailbox 4,mail.domain4.com,465,user4@domain4.com,YOUR_PASSWORD,user4@domain4.com,Info,ssl,60,1000,false,true,false
+Domain5 Mailbox 1,mail.domain5.com,465,user1@domain5.com,YOUR_PASSWORD,user1@domain5.com,Newsletter,ssl,60,1000,false,true,false
+Domain5 Mailbox 2,mail.domain5.com,465,user2@domain5.com,YOUR_PASSWORD,user2@domain5.com,Newsletter,ssl,60,1000,false,true,false
+Domain5 Mailbox 3,mail.domain5.com,465,user3@domain5.com,YOUR_PASSWORD,user3@domain5.com,Newsletter,ssl,60,1000,false,true,false
+Domain5 Mailbox 4,mail.domain5.com,465,user4@domain5.com,YOUR_PASSWORD,user4@domain5.com,Newsletter,ssl,60,1000,false,true,false
