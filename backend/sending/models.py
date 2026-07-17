@@ -56,6 +56,7 @@ class EmailQueueItem(models.Model):
         indexes = [
             models.Index(fields=["campaign", "status"]),
             models.Index(fields=["owner", "status"]),
+            models.Index(fields=["owner", "sent_at"]),
         ]
         constraints = [
             models.UniqueConstraint(

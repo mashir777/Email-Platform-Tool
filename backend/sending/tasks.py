@@ -1,21 +1,49 @@
 from celery import shared_task
 
+from sending.queue_control import (
+    bump_queue_run_generation,
+    current_queue_run_generation,
+)
 
-def _schedule_next_queue_run_if_pending(*, delay_seconds: int = 60):
+
+def _schedule_next_queue_run_if_pending(*, delay_seconds: int | None = None):
     """Continue sending queue: 1 email, wait, next email."""
     from django.conf import settings
+    from django.db import close_old_connections
 
-    from sending.services import has_pending_queue_items
+    from sending.services import (
+        MIN_SEND_INTERVAL_SECONDS,
+        compute_send_interval_seconds,
+        get_next_pending_queue_item,
+        has_pending_queue_items,
+    )
 
     if not has_pending_queue_items():
         return
 
-    delay = delay_seconds
+    if delay_seconds is None:
+        item = get_next_pending_queue_item()
+        if item and item.smtp_server_id:
+            delay_seconds = compute_send_interval_seconds(item.smtp_server)
+        else:
+            delay_seconds = MIN_SEND_INTERVAL_SECONDS
+
+    delay = max(MIN_SEND_INTERVAL_SECONDS, int(delay_seconds))
+    generation = current_queue_run_generation()
 
     if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
         import threading
 
-        threading.Timer(delay, lambda: run_pending_email_queue_task()).start()
+        def _run_if_still_active():
+            close_old_connections()
+            try:
+                if generation != current_queue_run_generation():
+                    return
+                run_pending_email_queue_task()
+            finally:
+                close_old_connections()
+
+        threading.Timer(delay, _run_if_still_active).start()
     else:
         run_pending_email_queue_task.apply_async(countdown=delay)
 
@@ -58,7 +86,11 @@ def dispatch_campaign(self, campaign_id: str):
     except Campaign.DoesNotExist:
         return {"ok": False, "reason": "not_found"}
 
-    from tracking.context import get_campaign_tracking_base_url, set_campaign_tracking_base_url, set_tracking_base_url
+    from tracking.context import (
+        get_campaign_tracking_base_url,
+        set_campaign_tracking_base_url,
+        set_tracking_base_url,
+    )
     from tracking.resolve import resolve_tracking_base_url
 
     tracking_base = get_campaign_tracking_base_url(str(campaign.id))
@@ -77,6 +109,12 @@ def dispatch_campaign(self, campaign_id: str):
                 "reason": "no_new_recipients",
                 "campaign_id": campaign_id,
             }
+        requeued = 0
+    elif campaign.status == Campaign.Status.PAUSED:
+        # Stop → Resume: cancel old timers, then continue PENDING only (no resend).
+        bump_queue_run_generation()
+        campaign.status = Campaign.Status.SENDING
+        campaign.save(update_fields=["status", "updated_at"])
         requeued = 0
     elif campaign.status == Campaign.Status.SENDING:
         from sending.services import requeue_campaign_items
@@ -113,16 +151,21 @@ def dispatch_campaign(self, campaign_id: str):
 
 @shared_task
 def run_pending_email_queue_task():
+    from django.db import close_old_connections
+
     from sending.services import (
-        MIN_SEND_INTERVAL_SECONDS,
         has_pending_queue_items,
         run_pending_email_queue,
     )
 
-    result = run_pending_email_queue()
-    if has_pending_queue_items():
-        _schedule_next_queue_run_if_pending(delay_seconds=MIN_SEND_INTERVAL_SECONDS)
-    return result
+    close_old_connections()
+    try:
+        result = run_pending_email_queue()
+        if has_pending_queue_items():
+            _schedule_next_queue_run_if_pending()
+        return result
+    finally:
+        close_old_connections()
 
 
 @shared_task

@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import * as authApi from "@/api/auth";
 import { fetchCampaignStats } from "@/api/campaigns";
 import { fetchStats } from "@/api/subscribers";
+import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { useAuth } from "@/context/AuthContext";
+import { getAuthErrorMessage, useAuth } from "@/context/AuthContext";
 
 export function DashboardPage() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [subscriberTotal, setSubscriberTotal] = useState<string>("—");
   const [campaignTotal, setCampaignTotal] = useState<string>("—");
+  const [isResending, setIsResending] = useState(false);
+  const [resendMessage, setResendMessage] = useState("");
 
   const greeting = user?.first_name ? `Welcome, ${user.first_name}` : "Welcome back";
 
@@ -22,11 +26,25 @@ export function DashboardPage() {
       .catch(() => setCampaignTotal("—"));
   }, []);
 
+  async function handleResendVerification() {
+    setResendMessage("");
+    setIsResending(true);
+    try {
+      await authApi.resendVerificationEmail();
+      setResendMessage("Verification email sent. Check your inbox (or Django console in local dev).");
+      await refreshUser();
+    } catch (err) {
+      setResendMessage(getAuthErrorMessage(err));
+    } finally {
+      setIsResending(false);
+    }
+  }
+
   const stats = [
-    { label: "Subscribers", value: subscriberTotal, hint: "Live from API" },
+    { label: "Total Emails", value: subscriberTotal, hint: "Live from API" },
     { label: "Campaigns", value: campaignTotal, hint: "Live from API" },
-    { label: "Emails Sent", value: "—", hint: "Phase 9" },
-    { label: "Open Rate", value: "—", hint: "Phase 11" },
+    { label: "Sent Emails", value: "—", hint: "Phase 9" },
+    { label: "Opened Emails", value: "—", hint: "Phase 11" },
   ];
 
   return (
@@ -38,8 +56,24 @@ export function DashboardPage() {
         </p>
         {!user?.is_verified && (
           <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            Your email is not verified yet. Some features may be restricted until
-            verification is complete.
+            <p>
+              Your email is not verified yet. Some features may be restricted until
+              verification is complete.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                className="!py-1.5 !text-xs"
+                isLoading={isResending}
+                onClick={handleResendVerification}
+              >
+                Resend verification email
+              </Button>
+              {resendMessage && (
+                <span className="text-xs text-amber-100/80">{resendMessage}</span>
+              )}
+            </div>
           </div>
         )}
       </Card>
@@ -58,7 +92,7 @@ export function DashboardPage() {
         <Card title="Quick Actions" description="Shortcuts to key modules">
           <ul className="space-y-2 text-sm text-slate-400">
             <li>
-              • <Link to="/subscribers" className="text-indigo-400 hover:underline">Manage subscribers and lists</Link>
+              • <Link to="/subscribers" className="text-indigo-400 hover:underline">Manage emails and lists</Link>
             </li>
             <li>• Build and schedule campaigns</li>
             <li>• Configure SMTP and domains</li>

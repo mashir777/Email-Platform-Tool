@@ -8,6 +8,7 @@ from accounts.models import User
 from campaigns.models import Campaign
 from core.encryption import encrypt_value
 from sending.models import EmailQueueItem
+from sending.services import _format_html_message, _personalize
 from smtp_servers.models import SmtpServer
 from subscribers.models import Subscriber, SubscriberList
 from tracking.models import TrackingEvent
@@ -98,3 +99,27 @@ class CampaignSendAPITestCase(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_personalize_uses_standard_and_any_csv_fields(self):
+        self.subscriber.company = "Acme SaaS"
+        self.subscriber.industrial_company = "Software"
+        self.subscriber.custom_fields = {
+            "Job Title": "Founder",
+            "City": "Lahore",
+        }
+        self.subscriber.save()
+
+        message = (
+            "Hi [First Name], {{Company Name}} serves {{Industrial Company}}. "
+            "Role: {{Job Title}}, city: [City]."
+        )
+        self.assertEqual(
+            _personalize(message, self.subscriber),
+            "Hi Sam, Acme SaaS serves Software. Role: Founder, city: Lahore.",
+        )
+
+    def test_plain_text_message_is_formatted_as_readable_html(self):
+        formatted = _format_html_message("Hi Sam,\n\nHow are you?\n\nBest,\nDavid")
+        self.assertIn('data-email-body="true"', formatted)
+        self.assertIn("Hi Sam,<br>\n<br>\nHow are you?", formatted)
+        self.assertIn("line-height:1.6", formatted)

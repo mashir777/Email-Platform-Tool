@@ -1,6 +1,8 @@
 import { apiV1Request } from "@/api/client";
 import type {
+  CsvFilterResult,
   ImportResult,
+  ListVerifyResult,
   Subscriber,
   SubscriberList,
   SubscriberStats,
@@ -75,4 +77,17 @@ export async function importSubscribers(
   form.append("file", file);
   if (listId) form.append("list_id", listId);
   return apiV1Request("/subscribers/import/", { method: "POST", body: form });
+}
+
+export async function verifyList(listId: string): Promise<{ verify: ListVerifyResult }> {
+  return apiV1Request("/subscribers/verify-list/", {
+    method: "POST",
+    body: JSON.stringify({ list_id: listId }),
+  });
+}
+
+export async function filterCsvWithReacher(file: File): Promise<{ filter: CsvFilterResult }> {
+  const form = new FormData();
+  form.append("file", file);
+  return apiV1Request("/subscribers/filter-csv/", { method: "POST", body: form });
 }

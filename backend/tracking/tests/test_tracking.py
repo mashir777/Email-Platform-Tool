@@ -1,5 +1,4 @@
-from django.test import Client, TestCase
-from django.urls import reverse
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import User
@@ -13,6 +12,11 @@ from tracking.services import inject_open_tracking_pixel
 from tracking.tokens import make_open_token
 
 
+@override_settings(
+    TRACKING_PUBLIC_BASE_URL="https://mail.example.com",
+    TRACKING_REQUIRE_SAME_DOMAIN=False,
+    TRACKING_FORCE_REMOTE_PIXEL=True,
+)
 class TrackingTestCase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
@@ -63,11 +67,72 @@ class TrackingTestCase(TestCase):
             self.campaign.html_content,
             str(self.queue_item.id),
             campaign_id=str(self.campaign.id),
+            from_email="info@example.com",
         )
-        self.assertIn("/t/open/", html)
-        self.assertIn("/t/view/", html)
-        self.assertIn("Confirm you received this email", html)
-        self.assertIn(make_open_token(str(self.queue_item.id)), html)
+        self.assertIn("/t/o/", html)
+        self.assertIn("<img", html.lower())
+        self.assertNotIn("Confirm you received this email", html)
+
+    def test_inject_plain_text_campaign_gets_pixel(self):
+        html = inject_open_tracking_pixel(
+            "Hi there\n\nPlain text campaign body",
+            str(self.queue_item.id),
+            campaign_id=str(self.campaign.id),
+            from_email="info@example.com",
+        )
+        self.assertIn("/t/o/", html)
+        self.assertIn("<img", html.lower())
+        self.assertNotIn("Confirm you received this email", html)
+
+    @override_settings(
+        TRACKING_PUBLIC_BASE_URL="https://datrixworld.com",
+        TRACKING_ORIGIN_BACKEND_URL="https://passport.trycloudflare.com",
+        TRACKING_REQUIRE_SAME_DOMAIN=True,
+        TRACKING_FORCE_REMOTE_PIXEL=False,
+    )
+    def test_falls_back_to_tunnel_when_proxy_offline(self):
+        from unittest.mock import patch
+
+        with patch(
+            "tracking.services._same_domain_proxy_is_live",
+            return_value=False,
+        ), patch(
+            "tracking.services._origin_backend_reachable",
+            return_value=True,
+        ), patch(
+            "tracking.services.get_live_origin_backend_url",
+            return_value="https://passport.trycloudflare.com",
+        ):
+            html = inject_open_tracking_pixel(
+                self.campaign.html_content,
+                str(self.queue_item.id),
+                campaign_id=str(self.campaign.id),
+                from_email="info@datrixworld.com",
+            )
+        self.assertIn("trycloudflare.com", html)
+        self.assertIn("/t/o/", html)
+
+    @override_settings(
+        TRACKING_PUBLIC_BASE_URL="https://datrixworld.com",
+        TRACKING_ORIGIN_BACKEND_URL="https://passport.trycloudflare.com",
+        TRACKING_REQUIRE_SAME_DOMAIN=True,
+        TRACKING_FORCE_REMOTE_PIXEL=False,
+    )
+    def test_same_domain_when_proxy_live(self):
+        from unittest.mock import patch
+
+        with patch(
+            "tracking.services._same_domain_proxy_is_live",
+            return_value=True,
+        ):
+            html = inject_open_tracking_pixel(
+                self.campaign.html_content,
+                str(self.queue_item.id),
+                campaign_id=str(self.campaign.id),
+                from_email="info@datrixworld.com",
+            )
+        self.assertIn("https://datrixworld.com/t/o/", html)
+        self.assertNotIn("trycloudflare.com", html)
 
     def test_view_link_records_open(self):
         token = make_open_token(str(self.queue_item.id))

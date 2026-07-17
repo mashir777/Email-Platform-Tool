@@ -1,12 +1,15 @@
 from rest_framework import serializers
 
 from campaigns.models import Campaign
+from email_templates.serializers import MessageVersionSerializer
 from subscribers.serializers import SubscriberListSerializer
 
 
 class CampaignSerializer(serializers.ModelSerializer):
     subscriber_list = SubscriberListSerializer(read_only=True)
     subscriber_list_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+    message_version = MessageVersionSerializer(read_only=True)
+    message_version_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
 
     class Meta:
         model = Campaign
@@ -21,6 +24,8 @@ class CampaignSerializer(serializers.ModelSerializer):
             "status",
             "subscriber_list",
             "subscriber_list_id",
+            "message_version",
+            "message_version_id",
             "scheduled_at",
             "sent_at",
             "recipient_count",
@@ -31,6 +36,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "id",
             "status",
             "subscriber_list",
+            "message_version",
             "sent_at",
             "recipient_count",
             "created_at",
@@ -46,6 +52,7 @@ class CampaignCreateSerializer(serializers.Serializer):
     html_content = serializers.CharField(required=False, allow_blank=True, default="")
     text_content = serializers.CharField(required=False, allow_blank=True, default="")
     subscriber_list_id = serializers.UUIDField(required=False, allow_null=True)
+    message_version_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class CampaignUpdateSerializer(serializers.Serializer):
@@ -56,6 +63,7 @@ class CampaignUpdateSerializer(serializers.Serializer):
     html_content = serializers.CharField(required=False, allow_blank=True)
     text_content = serializers.CharField(required=False, allow_blank=True)
     subscriber_list_id = serializers.UUIDField(required=False, allow_null=True)
+    message_version_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class CampaignScheduleSerializer(serializers.Serializer):

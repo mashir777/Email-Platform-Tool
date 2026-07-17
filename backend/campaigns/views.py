@@ -62,12 +62,18 @@ class CampaignCollectionView(APIView):
 
         data = serializer.validated_data
         list_id = data.pop("subscriber_list_id", None)
+        message_version_id = data.pop("message_version_id", None)
 
         try:
             subscriber_list = services.resolve_subscriber_list(request.user, list_id)
+            message_version = services.resolve_message_version(
+                request.user,
+                message_version_id,
+            )
             campaign = services.create_campaign(
                 owner=request.user,
                 subscriber_list=subscriber_list,
+                message_version=message_version,
                 **data,
             )
         except ValidationError as exc:
@@ -85,7 +91,11 @@ class CampaignDetailView(APIView):
 
     def get_object(self, request, campaign_id):
         campaign = get_object_or_404(
-            Campaign.objects.select_related("subscriber_list"),
+            Campaign.objects.select_related(
+                "subscriber_list",
+                "message_version",
+                "message_version__purpose",
+            ),
             id=campaign_id,
             owner=request.user,
         )
@@ -114,6 +124,12 @@ class CampaignDetailView(APIView):
             data["subscriber_list"] = services.resolve_subscriber_list(
                 request.user,
                 list_id,
+            )
+        if "message_version_id" in data:
+            message_version_id = data.pop("message_version_id")
+            data["message_version"] = services.resolve_message_version(
+                request.user,
+                message_version_id,
             )
 
         try:
@@ -182,6 +198,25 @@ class CampaignCancelView(APIView):
         return success_response(
             data={"campaign": CampaignSerializer(campaign).data},
             message="Campaign cancelled successfully.",
+        )
+
+
+class CampaignPauseView(APIView):
+    permission_classes = [IsAuthenticated, CanManageCampaigns, IsCampaignOwner]
+
+    @extend_schema(tags=["Campaigns"], summary="Stop an in-progress campaign send")
+    def post(self, request, campaign_id):
+        campaign = get_object_or_404(Campaign, id=campaign_id, owner=request.user)
+        self.check_object_permissions(request, campaign)
+
+        try:
+            campaign = services.pause_campaign(campaign=campaign)
+        except ValidationError as exc:
+            return error_response(exc.message_dict, status.HTTP_400_BAD_REQUEST)
+
+        return success_response(
+            data={"campaign": CampaignSerializer(campaign).data},
+            message="Sending stopped.",
         )
 
 
@@ -311,11 +346,15 @@ class CampaignDeliveryStatusView(APIView):
 
     @extend_schema(tags=["Campaigns"], summary="Per-recipient delivery and open tracking")
     def get(self, request, campaign_id):
+        from sending.services import get_campaign_send_summary
         from tracking.services import get_campaign_delivery_tracking
 
         campaign = get_object_or_404(Campaign, id=campaign_id, owner=request.user)
         self.check_object_permissions(request, campaign)
 
         return success_response(
-            data={"tracking": get_campaign_delivery_tracking(campaign=campaign)},
+            data={
+                "tracking": get_campaign_delivery_tracking(campaign=campaign),
+                "send_summary": get_campaign_send_summary(campaign),
+            },
         )

@@ -17,6 +17,7 @@ from subscribers.serializers import (
     SubscriberListCreateSerializer,
     SubscriberListSerializer,
     SubscriberListUpdateSerializer,
+    SubscriberListVerifySerializer,
     SubscriberSerializer,
     SubscriberStatsSerializer,
     SubscriberUpdateSerializer,
@@ -143,7 +144,13 @@ class SubscriberCollectionView(APIView):
             ) | qs.filter(last_name__icontains=search)
 
         return success_response(
-            data={"subscribers": SubscriberSerializer(qs.distinct(), many=True).data},
+            data={
+                "subscribers": SubscriberSerializer(
+                    qs.distinct(),
+                    many=True,
+                    context={"owner": request.user},
+                ).data,
+            },
         )
 
     @extend_schema(
@@ -278,4 +285,60 @@ class SubscriberImportView(APIView):
         return success_response(
             data={"import": result},
             message="Import completed successfully.",
+        )
+
+
+class SubscriberVerifyListView(APIView):
+    permission_classes = [IsAuthenticated, CanManageSubscribers]
+
+    @extend_schema(
+        tags=["Subscribers"],
+        request=SubscriberListVerifySerializer,
+        summary="Verify emails on a list with Reacher and remove invalid ones in place",
+    )
+    def post(self, request):
+        serializer = SubscriberListVerifySerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(serializer.errors, status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = services.verify_list_with_reacher(
+                owner=request.user,
+                list_id=serializer.validated_data["list_id"],
+            )
+        except ValidationError as exc:
+            return error_response(exc.message_dict, status.HTTP_400_BAD_REQUEST)
+
+        return success_response(
+            data={"verify": result},
+            message="List verification completed.",
+        )
+
+
+class SubscriberFilterCsvView(APIView):
+    permission_classes = [IsAuthenticated, CanManageSubscribers]
+    parser_classes = [MultiPartParser, FormParser]
+
+    @extend_schema(
+        tags=["Subscribers"],
+        request=SubscriberImportSerializer,
+        summary="Import CSV and filter emails with Reacher (check-if-email-exists)",
+    )
+    def post(self, request):
+        serializer = SubscriberImportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(serializer.errors, status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = services.import_and_filter_csv_with_reacher(
+                owner=request.user,
+                csv_file=serializer.validated_data["file"],
+                list_id=serializer.validated_data.get("list_id"),
+            )
+        except ValidationError as exc:
+            return error_response(exc.message_dict, status.HTTP_400_BAD_REQUEST)
+
+        return success_response(
+            data={"filter": result},
+            message="CSV import and Reacher filter completed.",
         )

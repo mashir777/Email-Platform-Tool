@@ -1,8 +1,11 @@
+import html
 import logging
+import re
 import smtplib
 from datetime import timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -29,6 +32,26 @@ def compute_send_interval_seconds(smtp_server: SmtpServer) -> int:
     """Seconds between consecutive sends based on hourly limit (minimum 60s)."""
     hourly = max(int(smtp_server.hourly_limit or 1), 1)
     return max(MIN_SEND_INTERVAL_SECONDS, 3600 // hourly)
+
+
+def get_next_send_in_seconds(*, smtp_server: SmtpServer | None) -> int:
+    """Seconds until the next email can leave this SMTP mailbox (0 = now)."""
+    if not smtp_server:
+        return 0
+    interval = compute_send_interval_seconds(smtp_server)
+    last_item = (
+        EmailQueueItem.objects.filter(
+            smtp_server_id=smtp_server.id,
+            status=EmailQueueItem.Status.SENT,
+            sent_at__isnull=False,
+        )
+        .order_by("-sent_at")
+        .first()
+    )
+    if not last_item or not last_item.sent_at:
+        return 0
+    elapsed = (timezone.now() - last_item.sent_at).total_seconds()
+    return max(0, int(interval - elapsed))
 
 
 def _count_sent_since(*, smtp_server_id, since):
@@ -149,18 +172,72 @@ def _pick_smtp_server(servers: list[SmtpServer], index: int) -> SmtpServer:
 def _personalize(content: str, subscriber: Subscriber) -> str:
     if not content:
         return ""
-    replacements = {
-        "{{email}}": subscriber.email,
-        "{{first_name}}": subscriber.first_name or "",
-        "{{last_name}}": subscriber.last_name or "",
-        "{{full_name}}": " ".join(
-            part for part in [subscriber.first_name, subscriber.last_name] if part
-        ),
+    display_name = subscriber.full_name or subscriber.first_name or ""
+    company = getattr(subscriber, "company", "") or ""
+    industrial_company = getattr(subscriber, "industrial_company", "") or ""
+
+    def normalize_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+    fields = {
+        normalize_key(key): str(value or "")
+        for key, value in (subscriber.custom_fields or {}).items()
     }
-    result = content
-    for key, value in replacements.items():
-        result = result.replace(key, value)
-    return result
+    # Canonical subscriber fields win over CSV aliases when both exist.
+    fields["email"] = subscriber.email
+    canonical_fields = {
+        "name": display_name,
+        "first_name": subscriber.first_name or display_name,
+        "firstname": subscriber.first_name or display_name,
+        "last_name": subscriber.last_name or "",
+        "lastname": subscriber.last_name or "",
+        "full_name": display_name,
+        "fullname": display_name,
+        "company": company,
+        "company_name": company,
+        "industrial_company": industrial_company,
+        "industrialcompany": industrial_company,
+        "industry": industrial_company,
+        "phone": subscriber.phone or "",
+    }
+    for key, value in canonical_fields.items():
+        if value or key not in fields:
+            fields[key] = value
+
+    placeholder_pattern = re.compile(
+        r"\{\{\s*([^{}]+?)\s*\}\}|\[([^\[\]]+?)\]",
+    )
+
+    def replace_placeholder(match):
+        raw_key = match.group(1) or match.group(2) or ""
+        normalized = normalize_key(raw_key)
+        return fields.get(normalized, match.group(0))
+
+    return placeholder_pattern.sub(replace_placeholder, content)
+
+
+def _format_html_message(content: str) -> str:
+    """Render textarea/plain-text messages as readable, email-safe HTML."""
+    content = (content or "").strip()
+    if not content:
+        return ""
+    if re.search(r"<(?:html|body)\b", content, flags=re.IGNORECASE):
+        return content
+
+    has_html_tags = bool(
+        re.search(r"</?[a-z][^>]*>", content, flags=re.IGNORECASE),
+    )
+    body = content if has_html_tags else html.escape(content)
+    if not has_html_tags:
+        body = body.replace("\r\n", "\n").replace("\r", "\n")
+        body = body.replace("\n", "<br>\n")
+
+    return (
+        '<div data-email-body="true" '
+        'style="font-family:Arial,Helvetica,sans-serif;font-size:15px;'
+        'line-height:1.6;color:#1f2937;max-width:640px;">'
+        f"{body}</div>"
+    )
 
 
 def send_message_via_smtp(
@@ -181,6 +258,10 @@ def send_message_via_smtp(
     message["Subject"] = subject
     message["From"] = from_header
     message["To"] = to_email
+    message["Date"] = formatdate(localtime=True)
+    message["Message-ID"] = make_msgid(domain=sender_email.split("@")[-1] if "@" in sender_email else None)
+    message["Reply-To"] = sender_email
+    message["MIME-Version"] = "1.0"
 
     body_text = text_content or "This email requires an HTML-capable client."
     message.attach(MIMEText(body_text, "plain", "utf-8"))
@@ -324,11 +405,19 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
         raise ValidationError(
             {
                 "subscriber_list_id": [
-                    "Subscriber list has no active subscribers. "
-                    "Go to Subscribers, select this list, and add contacts first.",
+                    "Email list has no active emails. "
+                    "Go to Emails, select this list, and add emails first.",
                 ],
             },
         )
+
+    already_sent_ids = set(
+        EmailQueueItem.objects.filter(
+            owner=campaign.owner,
+            status=EmailQueueItem.Status.SENT,
+            subscriber_id__in=recipients.values_list("id", flat=True),
+        ).values_list("subscriber_id", flat=True),
+    )
 
     campaign.status = Campaign.Status.SENDING
     campaign.recipient_count = recipient_count
@@ -337,6 +426,20 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
     queued = 0
     for index, subscriber in enumerate(recipients.iterator()):
         assigned_server = _pick_smtp_server(servers, index)
+        if subscriber.id in already_sent_ids:
+            EmailQueueItem.objects.get_or_create(
+                campaign=campaign,
+                subscriber=subscriber,
+                defaults={
+                    "owner": campaign.owner,
+                    "smtp_server": assigned_server,
+                    "to_email": subscriber.email,
+                    "status": EmailQueueItem.Status.SKIPPED,
+                    "last_error": "Already sent previously — skipped.",
+                },
+            )
+            continue
+
         item, was_created = EmailQueueItem.objects.get_or_create(
             campaign=campaign,
             subscriber=subscriber,
@@ -356,9 +459,14 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             EmailQueueItem.Status.FAILED,
             EmailQueueItem.Status.SKIPPED,
         }:
+            # Do not requeue globally-sent addresses; only retry failed/skipped for unsent.
+            if subscriber.id in already_sent_ids:
+                continue
             item.status = EmailQueueItem.Status.PENDING
             item.last_error = ""
             updates.extend(["status", "last_error"])
+        if item.status == EmailQueueItem.Status.SENT:
+            continue
         if item.smtp_server_id != assigned_server.id:
             item.smtp_server = assigned_server
             updates.append("smtp_server")
@@ -442,12 +550,30 @@ def extend_campaign_for_send(*, campaign: Campaign) -> int:
     existing_subscriber_ids = set(
         campaign.queue_items.values_list("subscriber_id", flat=True),
     )
+    already_sent_ids = set(
+        EmailQueueItem.objects.filter(
+            owner=campaign.owner,
+            status=EmailQueueItem.Status.SENT,
+            subscriber_id__in=recipients.values_list("id", flat=True),
+        ).values_list("subscriber_id", flat=True),
+    )
 
     pending_added = 0
     for index, subscriber in enumerate(recipients.iterator()):
         if subscriber.id in existing_subscriber_ids:
             continue
         assigned_server = _pick_smtp_server(servers, index)
+        if subscriber.id in already_sent_ids:
+            EmailQueueItem.objects.create(
+                owner=campaign.owner,
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=assigned_server,
+                to_email=subscriber.email,
+                status=EmailQueueItem.Status.SKIPPED,
+                last_error="Already sent previously — skipped.",
+            )
+            continue
         if is_undeliverable_email(subscriber.email):
             EmailQueueItem.objects.create(
                 owner=campaign.owner,
@@ -509,6 +635,7 @@ def send_campaign_test_email(*, campaign: Campaign, to_email: str):
         html_content = campaign.html_content or ""
         text_content = campaign.text_content or ""
         subject = campaign.subject or campaign.name
+    html_content = _format_html_message(html_content)
 
     send_message_via_smtp(
         smtp_server=smtp_server,
@@ -527,6 +654,14 @@ def process_queue_item(*, queue_item: EmailQueueItem):
         return True
 
     campaign = queue_item.campaign
+    campaign.refresh_from_db()
+    # Stop pressed: do not send; keep item pending for Resume.
+    if campaign.status != Campaign.Status.SENDING:
+        if queue_item.status == EmailQueueItem.Status.SENDING:
+            queue_item.status = EmailQueueItem.Status.PENDING
+            queue_item.save(update_fields=["status", "updated_at"])
+        return False
+
     subscriber = queue_item.subscriber
 
     if subscriber.status != Subscriber.Status.SUBSCRIBED:
@@ -548,16 +683,6 @@ def process_queue_item(*, queue_item: EmailQueueItem):
     text_content = _personalize(campaign.text_content, subscriber)
     subject = _personalize(campaign.subject, subscriber)
     campaign_id = str(campaign.id)
-    html_content = inject_open_tracking_pixel(
-        html_content,
-        str(queue_item.id),
-        campaign_id=campaign_id,
-    )
-    text_content = append_text_tracking_link(
-        text_content,
-        str(queue_item.id),
-        campaign_id=campaign_id,
-    )
 
     queue_item.status = EmailQueueItem.Status.SENDING
     queue_item.attempts += 1
@@ -572,6 +697,18 @@ def process_queue_item(*, queue_item: EmailQueueItem):
 
         from_email = _resolve_from_email(campaign, smtp_server)
         from_name = _resolve_from_name(campaign, smtp_server)
+
+        html_content = inject_open_tracking_pixel(
+            _format_html_message(html_content),
+            str(queue_item.id),
+            campaign_id=campaign_id,
+            from_email=from_email,
+        )
+        text_content = append_text_tracking_link(
+            text_content,
+            str(queue_item.id),
+            campaign_id=campaign_id,
+        )
 
         tracking_base_url = get_tracking_base_url(campaign_id)
 
@@ -628,6 +765,7 @@ def get_campaign_send_summary(campaign: Campaign) -> dict:
     )
     parallel = max(len(active_servers), 1)
     effective_interval = max(MIN_SEND_INTERVAL_SECONDS, per_server_interval // parallel)
+    next_in = get_next_send_in_seconds(smtp_server=smtp_server) if pending else 0
     return {
         "total": items.count(),
         "pending": pending,
@@ -635,6 +773,7 @@ def get_campaign_send_summary(campaign: Campaign) -> dict:
         "failed": failed_items.count(),
         "skipped": items.filter(status=EmailQueueItem.Status.SKIPPED).count(),
         "send_interval_seconds": effective_interval,
+        "next_send_in_seconds": next_in,
         "active_smtp_servers": parallel,
         "is_rate_limited": campaign.status == Campaign.Status.SENDING and pending > 0,
         "errors": [

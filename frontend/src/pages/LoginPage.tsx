@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -77,6 +77,13 @@ export function LoginPage() {
           <Button type="submit" className="mt-6 w-full" isLoading={isLoading}>
             Sign in
           </Button>
+
+          <p className="mt-4 text-center text-sm text-slate-400">
+            Don&apos;t have an account?{" "}
+            <Link to="/signup" className="font-medium text-indigo-400 hover:text-indigo-300">
+              Sign up
+            </Link>
+          </p>
         </form>
       </div>
     </div>

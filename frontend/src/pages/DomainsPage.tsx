@@ -44,6 +44,7 @@ export function DomainsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [initialExpandDone, setInitialExpandDone] = useState(false);
+  const [selectedDomainIds, setSelectedDomainIds] = useState<string[]>([]);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -100,6 +101,23 @@ export function DomainsPage() {
       await loadData();
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Delete failed");
+    }
+  }
+
+  async function handleDeleteSelected() {
+    if (
+      !selectedDomainIds.length ||
+      !confirm(`Delete ${selectedDomainIds.length} selected domain(s)?`)
+    ) return;
+    try {
+      await Promise.all(selectedDomainIds.map((id) => domainsApi.deleteDomain(id)));
+      if (expandedId && selectedDomainIds.includes(expandedId)) setExpandedId(null);
+      setSelectedDomainIds([]);
+      setNotice("Selected domains deleted.");
+      await loadData();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to delete selected domains");
+      await loadData();
     }
   }
 
@@ -287,6 +305,11 @@ export function DomainsPage() {
           <Button onClick={() => setShowForm((open) => !open)}>
             {showForm ? "Close" : "+ Add Domain"}
           </Button>
+          {selectedDomainIds.length > 0 && (
+            <Button variant="danger" onClick={() => void handleDeleteSelected()}>
+              Delete Selected ({selectedDomainIds.length})
+            </Button>
+          )}
         </div>
 
         {showForm && (
@@ -321,6 +344,19 @@ export function DomainsPage() {
           </p>
         ) : (
           <div className="space-y-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                aria-label="Select all domains"
+                checked={domains.length > 0 && selectedDomainIds.length === domains.length}
+                onChange={(event) =>
+                  setSelectedDomainIds(
+                    event.target.checked ? domains.map((domain) => domain.id) : [],
+                  )
+                }
+              />
+              Select All
+            </label>
             {domains.map((domain) => (
               <div
                 key={domain.id}
@@ -329,6 +365,18 @@ export function DomainsPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${domain.domain}`}
+                        checked={selectedDomainIds.includes(domain.id)}
+                        onChange={(event) =>
+                          setSelectedDomainIds((current) =>
+                            event.target.checked
+                              ? [...current, domain.id]
+                              : current.filter((id) => id !== domain.id),
+                          )
+                        }
+                      />
                       <h3 className="text-base font-semibold text-white">{domain.domain}</h3>
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColors[domain.status]}`}

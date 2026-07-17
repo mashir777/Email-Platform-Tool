@@ -41,3 +41,16 @@ export interface LoginResponse {
   user: User;
   tokens: AuthTokens;
 }
+
+export type RegisterResponse = LoginResponse;
+
+export interface RegisterPayload {
+  email: string;
+  password: string;
+  password_confirm: string;
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  company_name?: string;
+  timezone?: string;
+}

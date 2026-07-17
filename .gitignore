@@ -78,3 +78,7 @@ celerybeat.pid
 *.pem
 *.key
 credentials.json
+
+# Uploads / archives
+deployment/*.zip
+

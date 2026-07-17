@@ -229,13 +229,50 @@ CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS",
     default=["http://localhost:5173"],
 )
+# Allow all Vercel app hosts (production + preview): https://*.vercel.app
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://[\w.-]+\.vercel\.app$",
+]
+_extra_cors_regexes = env.list("CORS_ALLOWED_ORIGIN_REGEXES", default=[])
+if _extra_cors_regexes:
+    CORS_ALLOWED_ORIGIN_REGEXES = [*CORS_ALLOWED_ORIGIN_REGEXES, *_extra_cors_regexes]
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=["http://localhost:5173", "http://127.0.0.1:5173"],
+)
 
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
 TRACKING_PUBLIC_BASE_URL = env("TRACKING_PUBLIC_BASE_URL", default="http://127.0.0.1:8000")
+# Local Django URL behind tunnel — used by hosted PHP proxy on your domain
+TRACKING_ORIGIN_BACKEND_URL = env("TRACKING_ORIGIN_BACKEND_URL", default="")
+# Only embed tracking pixels when the public URL matches the From domain
+# (e.g. https://datrixworld.com). Free tunnels like trycloudflare/ngrok
+# make Gmail hide images and show “This message appears suspicious”.
+TRACKING_REQUIRE_SAME_DOMAIN = env.bool("TRACKING_REQUIRE_SAME_DOMAIN", default=True)
+TRACKING_FORCE_REMOTE_PIXEL = env.bool("TRACKING_FORCE_REMOTE_PIXEL", default=False)
+
+# Reacher (check-if-email-exists) — self-hosted email verification for CSV filtering
+REACHER_BACKEND_URL = env("REACHER_BACKEND_URL", default="http://127.0.0.1:8080")
+REACHER_API_KEY = env("REACHER_API_KEY", default="")
+REACHER_REQUEST_TIMEOUT = env.int("REACHER_REQUEST_TIMEOUT", default=120)
+REACHER_BULK_TIMEOUT = env.int("REACHER_BULK_TIMEOUT", default=3600)
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@emailplatform.local")
+EMAIL_HOST = env("EMAIL_HOST", default="")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=30)
 EMAIL_VERIFICATION_TOKEN_HOURS = env.int("EMAIL_VERIFICATION_TOKEN_HOURS", default=24)
 PASSWORD_RESET_TOKEN_HOURS = env.int("PASSWORD_RESET_TOKEN_HOURS", default=2)
+
+# pytracking library (D:\pytracking) — base URLs are filled at send time from TRACKING_PUBLIC_BASE_URL
+PYTRACKING_CONFIGURATION = {
+    "append_slash": True,
+}
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "Email Platform API",

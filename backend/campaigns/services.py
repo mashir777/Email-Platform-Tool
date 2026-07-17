@@ -3,16 +3,25 @@ from django.db import transaction
 from django.utils import timezone
 
 from campaigns.models import Campaign
+from email_templates.models import MessageVersion
 from sending.services import get_default_smtp_server
 from subscribers.models import Subscriber, SubscriberList
 
 
 def get_owner_campaigns(user):
-    return Campaign.objects.filter(owner=user).select_related("subscriber_list")
+    return Campaign.objects.filter(owner=user).select_related(
+        "subscriber_list",
+        "message_version",
+        "message_version__purpose",
+    )
 
 
 def get_owner_campaign(user, campaign_id):
-    return Campaign.objects.select_related("subscriber_list").get(
+    return Campaign.objects.select_related(
+        "subscriber_list",
+        "message_version",
+        "message_version__purpose",
+    ).get(
         id=campaign_id,
         owner=user,
     )
@@ -23,6 +32,20 @@ def _validate_list_owner(subscriber_list, owner):
         raise ValidationError({"subscriber_list_id": ["Invalid subscriber list."]})
     if not subscriber_list.is_active:
         raise ValidationError({"subscriber_list_id": ["Subscriber list is inactive."]})
+
+
+def resolve_message_version(owner, version_id):
+    if not version_id:
+        return None
+    try:
+        return MessageVersion.objects.select_related("purpose").get(
+            id=version_id,
+            purpose__owner=owner,
+        )
+    except MessageVersion.DoesNotExist as exc:
+        raise ValidationError(
+            {"message_version_id": ["Invalid message version."]},
+        ) from exc
 
 
 def _count_recipients(subscriber_list):
@@ -183,6 +206,27 @@ def cancel_campaign(*, campaign):
     campaign.status = Campaign.Status.CANCELLED
     campaign.scheduled_at = None
     campaign.save()
+    return campaign
+
+
+@transaction.atomic
+def pause_campaign(*, campaign):
+    """Stop an in-progress send. Pending queue items stay until Resume Send."""
+    if campaign.status == Campaign.Status.PAUSED:
+        return campaign
+
+    if campaign.status != Campaign.Status.SENDING:
+        raise ValidationError(
+            {"status": ["Only sending campaigns can be stopped."]},
+        )
+
+    # Cancel any already-scheduled Timer / countdown so sending actually stops.
+    from sending.queue_control import bump_queue_run_generation
+
+    bump_queue_run_generation()
+
+    campaign.status = Campaign.Status.PAUSED
+    campaign.save(update_fields=["status", "updated_at"])
     return campaign
 
 

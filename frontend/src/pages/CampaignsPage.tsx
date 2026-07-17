@@ -1,15 +1,17 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import * as campaignsApi from "@/api/campaigns";
 import type { CampaignDeliveryTracking } from "@/api/campaigns";
-import { createSubscriber, fetchLists, importSubscribers } from "@/api/subscribers";
+import { fetchMessagePurposes } from "@/api/messages";
+import { fetchLists, fetchSubscribers } from "@/api/subscribers";
 import * as smtpApi from "@/api/smtp";
 import { ApiClientError } from "@/api/client";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import type { Campaign, CampaignStats } from "@/types/campaigns";
-import type { SubscriberList } from "@/types/subscribers";
+import type { MessagePurpose } from "@/types/messages";
+import type { Subscriber, SubscriberList } from "@/types/subscribers";
 
 const statusColors: Record<string, string> = {
   draft: "text-slate-400 bg-slate-400/10",
@@ -25,8 +27,16 @@ const emptyForm = {
   subject: "",
   from_name: "",
   from_email: "",
-  html_content: "<h1>Hello!</h1>\n<p>Your email content here...</p>",
+  html_content: `Hi {{name}},<br><br>
+Quick question — is {{Company}} still handling [client onboarding and scheduling] manually?<br><br>
+Most {{Industrial Company}} teams I speak to are. It usually costs them 8–12 hours a week and a lot of avoidable errors.<br><br>
+Just curious if that's something you've been looking to fix, or if you've already got it sorted.<br><br>
+Either way, happy to share what's worked for similar teams.<br><br>
+Best,<br>
+David Wilson<br>
+Datrix World | datrixworld.com`,
   subscriber_list_id: "",
+  message_version_id: "",
 };
 
 function simplifySmtpError(error: string): string {
@@ -66,10 +76,10 @@ function formatSendResult(result: {
       ? `Delivered: ${summary.sent}, Failed: ${summary.failed}, Skipped: ${skipped}`
       : `Delivered: ${summary.sent}, Failed: ${summary.failed}`;
   if (skipped > 0 && summary.sent === 0) {
-    return `${base}. Add a real Gmail below — @example.com cannot receive mail.`;
+    return `${base}. Add real emails on the Emails page — @example.com cannot receive mail.`;
   }
   if (skipped > 0 && summary.sent > 0) {
-    return `${base}. Only real addresses receive mail; fake CSV data was skipped.`;
+    return `${base}. Only real addresses receive mail; fake addresses were skipped.`;
   }
   if (summary.is_rate_limited && (summary.pending ?? 0) > 0) {
     const minutes = Math.max(1, Math.round((summary.send_interval_seconds ?? 60) / 60));
@@ -87,16 +97,19 @@ function formatSendResult(result: {
   return summary.sent > 0 ? `${base}.` : base;
 }
 
-function formatSendInterval(hourlyLimit: number): string {
-  const intervalSeconds = Math.max(60, Math.floor(3600 / Math.max(hourlyLimit, 1)));
-  const minutes = Math.max(1, Math.round(intervalSeconds / 60));
-  return `~1 email every ${minutes} minute(s) at ${hourlyLimit}/hour`;
+const SEND_DELAY_STORAGE_KEY = "campaign_send_delay_seconds";
+
+function loadSendDelaySeconds(): number {
+  const raw = Number(localStorage.getItem(SEND_DELAY_STORAGE_KEY) || "60");
+  if (!Number.isFinite(raw)) return 60;
+  return Math.min(900, Math.max(60, Math.round(raw)));
 }
 
 export function CampaignsPage() {
   const [stats, setStats] = useState<CampaignStats | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [lists, setLists] = useState<SubscriberList[]>([]);
+  const [messagePurposes, setMessagePurposes] = useState<MessagePurpose[]>([]);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
@@ -108,16 +121,29 @@ export function CampaignsPage() {
   const [scheduleAt, setScheduleAt] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [defaultFromEmail, setDefaultFromEmail] = useState("");
-  const [defaultHourlyLimit, setDefaultHourlyLimit] = useState(60);
+  const [defaultSmtpId, setDefaultSmtpId] = useState<string | null>(null);
   const [fromEmailOptions, setFromEmailOptions] = useState<string[]>([]);
-  const [recipientEmail, setRecipientEmail] = useState("");
-  const [isAddingRecipient, setIsAddingRecipient] = useState(false);
-  const [isImportingCsv, setIsImportingCsv] = useState(false);
+  const [listRecipients, setListRecipients] = useState<Subscriber[]>([]);
+  const [isLoadingRecipients, setIsLoadingRecipients] = useState(false);
   const [testEmail, setTestEmail] = useState("");
   const [isTestSending, setIsTestSending] = useState(false);
   const [trackingId, setTrackingId] = useState<string | null>(null);
   const [trackingData, setTrackingData] = useState<CampaignDeliveryTracking | null>(null);
   const [isTrackingLoading, setIsTrackingLoading] = useState(false);
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState<string[]>([]);
+  const [sendDelaySeconds, setSendDelaySeconds] = useState(loadSendDelaySeconds);
+  const [sendProgress, setSendProgress] = useState<{
+    campaignId: string;
+    campaignName: string;
+    sent: number;
+    pending: number;
+    intervalSeconds: number;
+    nextInSeconds: number;
+  } | null>(null);
+  /** Seconds left on the timer when Stop was pressed — Resume continues from here. */
+  const stoppedAtSecondsRef = useRef<{ campaignId: string; nextInSeconds: number } | null>(
+    null,
+  );
 
   const selectedList = lists.find((l) => l.id === form.subscriber_list_id);
   const recipientCount = selectedList?.subscriber_count ?? 0;
@@ -138,6 +164,7 @@ export function CampaignsPage() {
       ...form,
       from_email: resolveFromEmail(form.from_email),
       subscriber_list_id: form.subscriber_list_id,
+      message_version_id: form.message_version_id || null,
     };
   }
 
@@ -147,7 +174,18 @@ export function CampaignsPage() {
       setLists(listsRes.lists);
       return listsRes.lists;
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : "Failed to load subscriber lists");
+      setError(err instanceof ApiClientError ? err.message : "Failed to load email lists");
+      return [];
+    }
+  }, []);
+
+  const reloadMessages = useCallback(async () => {
+    try {
+      const messagesRes = await fetchMessagePurposes();
+      setMessagePurposes(messagesRes.purposes);
+      return messagesRes.purposes;
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to load messages");
       return [];
     }
   }, []);
@@ -156,14 +194,16 @@ export function CampaignsPage() {
     setIsLoading(true);
     setError("");
     try {
-      const [statsRes, campaignsRes, listsRes] = await Promise.all([
+      const [statsRes, campaignsRes, listsRes, messagesRes] = await Promise.all([
         campaignsApi.fetchCampaignStats(),
         campaignsApi.fetchCampaigns({ search: search || undefined }),
         fetchLists(),
+        fetchMessagePurposes(),
       ]);
       setStats(statsRes.stats);
       setCampaigns(campaignsRes.campaigns);
       setLists(listsRes.lists);
+      setMessagePurposes(messagesRes.purposes);
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Failed to load campaigns");
     } finally {
@@ -180,6 +220,11 @@ export function CampaignsPage() {
     try {
       const result = await campaignsApi.fetchCampaignDeliveryStatus(id);
       setTrackingData(result.tracking);
+      const campaignName =
+        result.tracking.campaign_name ||
+        campaigns.find((c) => c.id === id)?.name ||
+        "Campaign";
+      applySendSummaryToProgress(id, campaignName, result.send_summary);
     } catch (err) {
       if (showSpinner) {
         setError(err instanceof ApiClientError ? err.message : "Could not load tracking");
@@ -188,7 +233,7 @@ export function CampaignsPage() {
     } finally {
       if (showSpinner) setIsTrackingLoading(false);
     }
-  }, []);
+  }, [campaigns]);
 
   useEffect(() => {
     if (!trackingId) return;
@@ -199,21 +244,81 @@ export function CampaignsPage() {
   }, [trackingId, loadTracking]);
 
   useEffect(() => {
-    const hasSending = campaigns.some((campaign) => campaign.status === "sending");
-    if (!hasSending) return;
+    const sendingCampaign = campaigns.find((campaign) => campaign.status === "sending");
+    if (!sendingCampaign) {
+      setSendProgress((current) =>
+        current && campaigns.some((c) => c.id === current.campaignId && c.status === "sending")
+          ? current
+          : null,
+      );
+      return;
+    }
 
-    const intervalId = window.setInterval(() => {
-      loadData();
-    }, 15000);
+    const poll = () => {
+      void loadData();
+      void campaignsApi
+        .fetchCampaignDeliveryStatus(sendingCampaign.id)
+        .then((result) => {
+          applySendSummaryToProgress(
+            sendingCampaign.id,
+            sendingCampaign.name,
+            result.send_summary,
+          );
+        })
+        .catch(() => undefined);
+    };
 
+    poll();
+    const intervalId = window.setInterval(poll, 5000);
     return () => window.clearInterval(intervalId);
   }, [campaigns, loadData]);
+
+  // Local countdown (e.g. 60→59→58→0) then restart until queue is empty
+  useEffect(() => {
+    if (!sendProgress || sendProgress.pending <= 0) return;
+    const tick = window.setInterval(() => {
+      setSendProgress((current) => {
+        if (!current || current.pending <= 0) return current;
+        if (current.nextInSeconds <= 0) {
+          return { ...current, nextInSeconds: current.intervalSeconds };
+        }
+        return { ...current, nextInSeconds: current.nextInSeconds - 1 };
+      });
+    }, 1000);
+    return () => window.clearInterval(tick);
+  }, [sendProgress?.campaignId, sendProgress?.pending]);
+
+  useEffect(() => {
+    void loadDefaultSmtp();
+  }, []);
 
   useEffect(() => {
     if (showForm) {
       reloadLists();
     }
   }, [showForm, reloadLists]);
+
+  useEffect(() => {
+    if (!form.subscriber_list_id) {
+      setListRecipients([]);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingRecipients(true);
+    fetchSubscribers({ list_id: form.subscriber_list_id, status: "subscribed" })
+      .then((res) => {
+        if (!cancelled) setListRecipients(res.subscribers);
+      })
+      .catch(() => {
+        if (!cancelled) setListRecipients([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingRecipients(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.subscriber_list_id]);
 
   async function loadDefaultSmtp() {
     try {
@@ -226,19 +331,105 @@ export function CampaignsPage() {
       ];
       setFromEmailOptions(fromEmails);
       setDefaultFromEmail(defaultServer?.from_email ?? fromEmails[0] ?? "");
-      setDefaultHourlyLimit(defaultServer?.hourly_limit ?? 60);
+      setDefaultSmtpId(defaultServer?.id ?? null);
       return defaultServer;
     } catch {
       return null;
     }
   }
 
+  async function applySendDelaySeconds(seconds: number) {
+    const delay = Math.min(900, Math.max(60, Math.round(seconds) || 60));
+    setSendDelaySeconds(delay);
+    localStorage.setItem(SEND_DELAY_STORAGE_KEY, String(delay));
+    // hourly_limit such that 3600/hourly ≈ delay (backend also enforces min 60s)
+    const hourly = Math.max(1, Math.floor(3600 / delay));
+    if (!defaultSmtpId) {
+      const server = await loadDefaultSmtp();
+      if (!server?.id) return delay;
+      await smtpApi.updateSmtpServer(server.id, { hourly_limit: hourly });
+      return delay;
+    }
+    try {
+      await smtpApi.updateSmtpServer(defaultSmtpId, { hourly_limit: hourly });
+    } catch {
+      // Keep local delay even if SMTP update fails; queue still uses SMTP limits.
+    }
+    return delay;
+  }
+
+  function applySendSummaryToProgress(
+    campaignId: string,
+    campaignName: string,
+    summary?: {
+      sent?: number;
+      pending?: number;
+      send_interval_seconds?: number;
+      next_send_in_seconds?: number;
+      is_rate_limited?: boolean;
+    },
+  ) {
+    if (!summary) return;
+    const pending = summary.pending ?? 0;
+    if (pending > 0) {
+      const interval = summary.send_interval_seconds ?? sendDelaySeconds;
+      const serverNext = summary.next_send_in_seconds ?? interval;
+      setSendProgress((current) => {
+        const same = current?.campaignId === campaignId;
+        const emailJustSent = Boolean(same && pending < (current?.pending ?? 0));
+        const stoppedAt =
+          stoppedAtSecondsRef.current?.campaignId === campaignId
+            ? stoppedAtSecondsRef.current.nextInSeconds
+            : null;
+
+        let nextIn = serverNext > 0 ? serverNext : interval;
+
+        // After Stop → Resume: continue from the exact second where user stopped.
+        if (stoppedAt != null && !emailJustSent) {
+          if (same && (current?.nextInSeconds ?? 0) > 0) {
+            nextIn = current!.nextInSeconds;
+          } else {
+            nextIn = stoppedAt;
+          }
+        } else if (same && !emailJustSent && (current?.nextInSeconds ?? 0) > 0) {
+          // Keep smooth local countdown between polls unless an email just left
+          if (Math.abs((current?.nextInSeconds ?? 0) - serverNext) <= 5) {
+            nextIn = current!.nextInSeconds;
+          }
+        }
+
+        if (emailJustSent) {
+          nextIn = serverNext > 0 ? serverNext : interval;
+          if (stoppedAtSecondsRef.current?.campaignId === campaignId) {
+            stoppedAtSecondsRef.current = null;
+          }
+        }
+
+        return {
+          campaignId,
+          campaignName,
+          sent: summary.sent ?? 0,
+          pending,
+          intervalSeconds: interval,
+          nextInSeconds: Math.max(0, nextIn),
+        };
+      });
+    } else {
+      setSendProgress((current) => (current?.campaignId === campaignId ? null : current));
+    }
+  }
+
   async function openCreate() {
-    const [latestLists, defaultServer] = await Promise.all([reloadLists(), loadDefaultSmtp()]);
+    const [latestLists, defaultServer] = await Promise.all([
+      reloadLists(),
+      loadDefaultSmtp(),
+      reloadMessages(),
+    ]);
     setEditingId(null);
     setForm({
       ...emptyForm,
       subscriber_list_id: latestLists[0]?.id ?? "",
+      message_version_id: "",
       from_email: defaultServer?.from_email ?? "",
       from_name: defaultServer?.from_name ?? "",
     });
@@ -247,7 +438,11 @@ export function CampaignsPage() {
   }
 
   async function openEdit(campaign: Campaign) {
-    const [latestLists, defaultServer] = await Promise.all([reloadLists(), loadDefaultSmtp()]);
+    const [latestLists, defaultServer] = await Promise.all([
+      reloadLists(),
+      loadDefaultSmtp(),
+      reloadMessages(),
+    ]);
     const smtpDomain = defaultServer?.from_email?.split("@")[1] ?? "";
     const campaignDomain = campaign.from_email?.split("@")[1] ?? "";
     const fromEmailMismatch = Boolean(
@@ -261,8 +456,9 @@ export function CampaignsPage() {
       from_email: fromEmailMismatch
         ? defaultServer?.from_email ?? campaign.from_email
         : campaign.from_email || defaultServer?.from_email || "",
-      html_content: campaign.html_content || "<h1>Hello!</h1>\n<p>Your email content here...</p>",
+      html_content: campaign.html_content || emptyForm.html_content,
       subscriber_list_id: campaign.subscriber_list?.id ?? latestLists[0]?.id ?? "",
+      message_version_id: campaign.message_version?.id ?? "",
     });
     if (fromEmailMismatch) {
       setNotice(`From email updated to ${defaultServer?.from_email} — Gmail cannot be used with your mail server.`);
@@ -274,7 +470,7 @@ export function CampaignsPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!form.subscriber_list_id) {
-      setError("Please select a subscriber list.");
+      setError("Please select an email list.");
       return;
     }
     const payload = buildCampaignPayload();
@@ -321,6 +517,22 @@ export function CampaignsPage() {
     }
   }
 
+  async function handleDeleteSelected() {
+    if (
+      !selectedCampaignIds.length ||
+      !confirm(`Delete ${selectedCampaignIds.length} selected campaign(s)?`)
+    ) return;
+    try {
+      await Promise.all(selectedCampaignIds.map((id) => campaignsApi.deleteCampaign(id)));
+      setSelectedCampaignIds([]);
+      setNotice("Selected campaigns deleted.");
+      await loadData();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to delete selected campaigns");
+      await loadData();
+    }
+  }
+
   async function handleCancel(id: string) {
     try {
       await campaignsApi.cancelCampaign(id);
@@ -330,9 +542,35 @@ export function CampaignsPage() {
     }
   }
 
+  async function handleStopSending(id: string) {
+    const remaining =
+      sendProgress?.campaignId === id ? sendProgress.nextInSeconds : null;
+    try {
+      setError("");
+      if (remaining != null) {
+        stoppedAtSecondsRef.current = {
+          campaignId: id,
+          nextInSeconds: Math.max(0, remaining),
+        };
+      }
+      await campaignsApi.pauseCampaign(id);
+      // Stop timer UI immediately even if a later loadData poll fails.
+      setCampaigns((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, status: "paused" as const } : c)),
+      );
+      setSendProgress(null);
+      setNotice("Sending stopped. Use Resume Send to continue.");
+      await loadData();
+      // Successful stop — don't keep a refresh/poll 500 banner over the Stop result.
+      setError("");
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Stop failed");
+    }
+  }
+
   async function saveCampaignFromForm(id: string): Promise<boolean> {
     if (!form.subscriber_list_id) {
-      setError("Select a subscriber list.");
+      setError("Select an email list.");
       return false;
     }
     if (!form.subject.trim()) {
@@ -351,6 +589,7 @@ export function CampaignsPage() {
         from_email: resolveFromEmail(form.from_email),
         html_content: form.html_content,
         subscriber_list_id: form.subscriber_list_id,
+        message_version_id: form.message_version_id || null,
       });
       return true;
     } catch (err) {
@@ -368,12 +607,16 @@ export function CampaignsPage() {
     try {
       const saved = await saveCampaignFromForm(editingId);
       if (!saved) return;
+      await applySendDelaySeconds(sendDelaySeconds);
       const result = await campaignsApi.sendCampaign(editingId);
+      const sentId = editingId;
       setShowForm(false);
       setEditingId(null);
       setForm(emptyForm);
       setNotice(formatSendResult(result));
+      applySendSummaryToProgress(sentId, form.name || "Campaign", result.send_summary);
       await loadData();
+      await openTracking(sentId);
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Send failed");
     } finally {
@@ -407,7 +650,7 @@ export function CampaignsPage() {
     if (!campaign) return;
 
     if (!campaign.subscriber_list) {
-      setError("Subscriber list is required. Edit the campaign, select a list, and click Update.");
+      setError("Email list is required. Edit the campaign, select a list, and click Update.");
       return;
     }
     const listCount =
@@ -415,7 +658,7 @@ export function CampaignsPage() {
       lists.find((l) => l.id === campaign.subscriber_list?.id)?.subscriber_count ??
       0;
     if (listCount === 0) {
-      setError("This list has no subscribers. Add contacts from the Subscribers page first.");
+      setError("This list has no emails. Add emails from the Emails page first.");
       return;
     }
     if (!campaign.subject?.trim()) {
@@ -429,68 +672,23 @@ export function CampaignsPage() {
     }
     setIsSending(true);
     try {
+      await applySendDelaySeconds(sendDelaySeconds);
       const result = await campaignsApi.sendCampaign(id);
       setShowForm(false);
       setEditingId(null);
       setForm(emptyForm);
       setNotice(formatSendResult(result));
+      applySendSummaryToProgress(
+        id,
+        campaign.name,
+        result.send_summary,
+      );
       await loadData();
+      await openTracking(id);
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Send failed");
     } finally {
       setIsSending(false);
-    }
-  }
-
-  async function handleAddRecipient(e: FormEvent) {
-    e.preventDefault();
-    if (!form.subscriber_list_id) {
-      setError("Select a subscriber list first.");
-      return;
-    }
-    const email = recipientEmail.trim().toLowerCase();
-    if (!email || !email.includes("@")) {
-      setError("Enter a valid recipient email (e.g. yourname@gmail.com).");
-      return;
-    }
-    setIsAddingRecipient(true);
-    setError("");
-    try {
-      await createSubscriber({
-        email,
-        list_ids: [form.subscriber_list_id],
-        status: "subscribed",
-      });
-      setRecipientEmail("");
-      setNotice(`Recipient added: ${email}`);
-      await reloadLists();
-    } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : "Could not add recipient");
-    } finally {
-      setIsAddingRecipient(false);
-    }
-  }
-
-  async function handleCsvImport(file: File) {
-    if (!form.subscriber_list_id) {
-      setError("Select a subscriber list before importing CSV.");
-      return;
-    }
-    setIsImportingCsv(true);
-    setError("");
-    try {
-      const result = await importSubscribers(file, form.subscriber_list_id);
-      const { created, updated, skipped, rejected = 0 } = result.import;
-      const rejectedNote =
-        rejected > 0 ? ` ${rejected} fake/test addresses (@example.com) rejected.` : "";
-      setNotice(
-        `CSV imported: ${created} created, ${updated} updated, ${skipped} skipped.${rejectedNote}`,
-      );
-      await reloadLists();
-    } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : "CSV import failed");
-    } finally {
-      setIsImportingCsv(false);
     }
   }
 
@@ -533,7 +731,7 @@ export function CampaignsPage() {
   async function handleCreateAndSend(e: FormEvent) {
     e.preventDefault();
     if (!form.subscriber_list_id) {
-      setError("Please select a subscriber list.");
+      setError("Please select an email list.");
       return;
     }
     if (!form.subject.trim()) {
@@ -545,12 +743,12 @@ export function CampaignsPage() {
       return;
     }
     if (recipientCount === 0) {
-      setError("This list has no subscribers. Add contacts from the Subscribers page first.");
+      setError("This list has no emails. Add emails from the Emails page first.");
       return;
     }
     if (deliverableCount === 0) {
       setError(
-        "This list has only fake @example.com addresses. Add a real Gmail in the recipient field below.",
+        "This list has only fake @example.com addresses. Add real emails on the Emails page.",
       );
       return;
     }
@@ -558,6 +756,7 @@ export function CampaignsPage() {
     setNotice("");
     setIsSending(true);
     try {
+      await applySendDelaySeconds(sendDelaySeconds);
       const payload = buildCampaignPayload();
       const created = await campaignsApi.createCampaign(payload);
       const result = await campaignsApi.sendCampaign(created.campaign.id);
@@ -565,10 +764,16 @@ export function CampaignsPage() {
       setForm(emptyForm);
       setEditingId(null);
       setNotice(formatSendResult(result));
+      applySendSummaryToProgress(
+        created.campaign.id,
+        created.campaign.name,
+        result.send_summary,
+      );
       if (result.send_summary?.failed) {
         setError(formatSendResult(result));
       }
       await loadData();
+      await openTracking(created.campaign.id);
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Send failed");
     } finally {
@@ -596,8 +801,8 @@ export function CampaignsPage() {
             <span className="font-mono text-indigo-100">{defaultFromEmail}</span> — your domain
             mailbox only, not @gmail.com.
             <br />
-            <strong>To (recipients):</strong> Gmail or any email — add below or import CSV with
-            real addresses (not @example.com).
+            <strong>To (emails):</strong> Pick an email list below. Emails send one by
+            one. Manage emails on the Emails page (not @example.com).
           </p>
         </div>
       )}
@@ -612,6 +817,92 @@ export function CampaignsPage() {
           {notice}
         </div>
       )}
+
+      {sendProgress && sendProgress.pending > 0 && (
+        <div className="fixed right-4 top-24 z-40 w-56 rounded-xl border border-amber-500/40 bg-slate-950/95 p-4 shadow-xl shadow-black/40">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-300">
+            Send timer
+          </p>
+          <p className="mt-1 truncate text-sm text-slate-300">{sendProgress.campaignName}</p>
+          <p className="mt-3 text-center text-5xl font-bold tabular-nums text-white">
+            {sendProgress.nextInSeconds}
+          </p>
+          <p className="mt-1 text-center text-xs text-slate-400">
+            next email in seconds
+          </p>
+          <p className="mt-3 text-center text-xs text-slate-500">
+            Sent {sendProgress.sent} · Queued {sendProgress.pending}
+            <br />
+            Delay {sendProgress.intervalSeconds}s (
+            {Math.max(1, Math.round(sendProgress.intervalSeconds / 60))} min)
+          </p>
+          <button
+            type="button"
+            onClick={() => handleStopSending(sendProgress.campaignId)}
+            className="mt-4 w-full rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500"
+          >
+            Stop
+          </button>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-400">
+            Wait between each email (seconds)
+          </label>
+          <input
+            type="number"
+            min={60}
+            max={900}
+            step={30}
+            value={sendDelaySeconds}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              setSendDelaySeconds(
+                Number.isFinite(value) ? Math.min(900, Math.max(60, Math.round(value))) : 60,
+              );
+            }}
+            onBlur={(e) => {
+              const value = Number(e.target.value);
+              void applySendDelaySeconds(
+                Number.isFinite(value) ? value : sendDelaySeconds,
+              );
+            }}
+            className="w-32 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-400">
+            Or minutes
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={15}
+            step={1}
+            value={Math.max(1, Math.round(sendDelaySeconds / 60))}
+            onChange={(e) => {
+              const minutes = Number(e.target.value);
+              const secs = Number.isFinite(minutes)
+                ? Math.min(900, Math.max(60, Math.round(minutes) * 60))
+                : 60;
+              setSendDelaySeconds(secs);
+            }}
+            onBlur={(e) => {
+              const minutes = Number(e.target.value);
+              const secs = Number.isFinite(minutes)
+                ? Math.min(900, Math.max(60, Math.round(minutes) * 60))
+                : sendDelaySeconds;
+              void applySendDelaySeconds(secs);
+            }}
+            className="w-24 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100"
+          />
+        </div>
+        <p className="pb-2 text-xs text-slate-500">
+          Default 60s (1 min). Timer shows 60, 59, 58… then sends one email and restarts.
+        </p>
+      </div>
 
       {stats && (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -644,6 +935,11 @@ export function CampaignsPage() {
             className="flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
           />
           <Button onClick={openCreate}>+ New Campaign</Button>
+          {selectedCampaignIds.length > 0 && (
+            <Button variant="danger" onClick={() => void handleDeleteSelected()}>
+              Delete Selected ({selectedCampaignIds.length})
+            </Button>
+          )}
         </div>
 
         {!isLoading && campaigns.length > 0 && campaigns.every((c) => c.status === "sent") && (
@@ -714,7 +1010,7 @@ export function CampaignsPage() {
               </div>
               <div className="sm:col-span-2">
                 <label className="mb-1.5 block text-sm font-medium text-slate-300">
-                  Subscriber list <span className="text-red-400">*</span>
+                  Email list <span className="text-red-400">*</span>
                 </label>
                 {lists.length > 0 && (
                   <select
@@ -728,23 +1024,31 @@ export function CampaignsPage() {
                     <option value="">Select a list</option>
                     {lists.map((list) => (
                       <option key={list.id} value={list.id}>
-                        {list.name} ({list.deliverable_count ?? list.subscriber_count} sendable)
+                        {list.name} ({list.waiting_emails ?? list.deliverable_count ?? list.subscriber_count} waiting / {list.total_emails ?? list.subscriber_count} total)
                       </option>
                     ))}
                   </select>
                 )}
                 {lists.length === 0 && (
                   <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
-                    No subscriber lists found. Create lists and add contacts from the
-                    Subscribers page.
+                    No email lists found. Create lists and add emails from the
+                    Emails page.
                   </p>
                 )}
                 {form.subscriber_list_id && (
                   <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900/40 p-3">
                     <p className="text-sm text-slate-300">
-                      Recipients in list:{" "}
-                      <span className={deliverableCount > 0 ? "text-emerald-400" : "text-amber-400"}>
-                        {deliverableCount} sendable
+                      Emails in list:{" "}
+                      <span className="text-slate-200">
+                        {selectedList?.total_emails ?? recipientCount} total
+                      </span>
+                      {" · "}
+                      <span className="text-emerald-400">
+                        {selectedList?.sent_emails ?? 0} sent
+                      </span>
+                      {" · "}
+                      <span className="text-amber-300">
+                        {selectedList?.waiting_emails ?? deliverableCount} waiting
                       </span>
                       {fakeRecipientCount > 0 && (
                         <span className="text-amber-400">
@@ -753,57 +1057,70 @@ export function CampaignsPage() {
                         </span>
                       )}
                     </p>
-                    <div className="mt-3 flex flex-wrap items-center gap-3">
-                      <label className="cursor-pointer">
-                        <span className="inline-flex items-center justify-center rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-100 hover:bg-slate-700">
-                          {isImportingCsv ? "Importing..." : "Import CSV to this list"}
-                        </span>
-                        <input
-                          type="file"
-                          accept=".csv"
-                          className="hidden"
-                          disabled={isImportingCsv}
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) handleCsvImport(file);
-                            e.target.value = "";
-                          }}
-                        />
-                      </label>
-                      <span className="text-xs text-slate-500">
-                        CSV must include an <span className="font-mono">email</span> column
-                      </span>
-                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Send only queues <span className="text-amber-200">Waiting</span> emails.
+                      Already sent addresses are skipped. Manage lists on the{" "}
+                      <span className="text-slate-400">Emails</span> page.
+                    </p>
                     {deliverableCount === 0 && (
                       <p className="mt-2 text-xs text-amber-400">
-                        Add a Gmail recipient below — @example.com CSV demo data cannot receive mail.
+                        This list has no sendable emails. Add real addresses on the Emails page.
                       </p>
                     )}
-                    <form
-                      onSubmit={handleAddRecipient}
-                      className="mt-3 flex flex-wrap items-end gap-2 border-t border-slate-700/60 pt-3"
-                    >
-                      <div className="min-w-[220px] flex-1">
-                        <label className="mb-1 block text-xs font-medium text-slate-400">
-                          Add recipient (To) — Gmail OK
-                        </label>
-                        <input
-                          type="email"
-                          value={recipientEmail}
-                          onChange={(e) => setRecipientEmail(e.target.value)}
-                          placeholder="yourname@gmail.com"
-                          className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100"
-                        />
-                      </div>
-                      <Button type="submit" isLoading={isAddingRecipient} className="shrink-0">
-                        Add to list
-                      </Button>
-                    </form>
+                    <div className="mt-3 max-h-48 overflow-auto rounded-lg border border-slate-700/80">
+                      {isLoadingRecipients ? (
+                        <p className="px-3 py-2 text-xs text-slate-500">Loading list emails…</p>
+                      ) : listRecipients.length === 0 ? (
+                        <p className="px-3 py-2 text-xs text-slate-500">No emails in this list.</p>
+                      ) : (
+                        <ul className="divide-y divide-slate-800 text-sm">
+                          {listRecipients.map((sub) => (
+                            <li
+                              key={sub.id}
+                              className="flex items-center justify-between gap-3 px-3 py-2"
+                            >
+                              <span className="truncate text-slate-200">{sub.email}</span>
+                              <span
+                                className={`shrink-0 text-xs ${
+                                  sub.send_status === "sent"
+                                    ? "text-emerald-400"
+                                    : "text-amber-300"
+                                }`}
+                              >
+                                {sub.send_status === "sent" ? "Sent" : "Waiting"}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   </div>
                 )}
                 <p className="mt-2 text-xs text-slate-500">
-                  Send rate: {formatSendInterval(defaultHourlyLimit)} (set on SMTP page)
+                  Send rate: 1 email every {sendDelaySeconds}s (set delay above or change here)
                 </p>
+                <label className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                  Wait between emails (seconds)
+                  <input
+                    type="number"
+                    min={60}
+                    max={900}
+                    step={30}
+                    value={sendDelaySeconds}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      setSendDelaySeconds(
+                        Number.isFinite(value)
+                          ? Math.min(900, Math.max(60, Math.round(value)))
+                          : 60,
+                      );
+                    }}
+                    onBlur={() => {
+                      void applySendDelaySeconds(sendDelaySeconds);
+                    }}
+                    className="w-24 rounded-lg border border-slate-700 bg-slate-900/80 px-2 py-1.5 text-sm text-slate-100"
+                  />
+                </label>
                 {editingId && (
                   <form
                     onSubmit={async (e) => {
@@ -848,6 +1165,47 @@ export function CampaignsPage() {
               </div>
               <div className="sm:col-span-2">
                 <label className="mb-1.5 block text-sm font-medium text-slate-300">
+                  Attach message <span className="text-slate-500">(optional)</span>
+                </label>
+                <select
+                  value={form.message_version_id}
+                  onChange={(e) => {
+                    const versionId = e.target.value;
+                    const matched = messagePurposes
+                      .flatMap((purpose) =>
+                        purpose.versions.map((version) => ({ purpose, version })),
+                      )
+                      .find((item) => item.version.id === versionId);
+                    setForm((current) => ({
+                      ...current,
+                      message_version_id: versionId,
+                      subject:
+                        matched?.version.subject?.trim() ||
+                        current.subject ||
+                        `${matched?.purpose.name ?? "Campaign"} ${matched?.version.version.toUpperCase() ?? ""}`.trim(),
+                      html_content:
+                        matched?.version.html_content?.trim() || current.html_content,
+                    }));
+                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
+                >
+                  <option value="">No message attached</option>
+                  {messagePurposes.map((purpose) => (
+                    <optgroup key={purpose.id} label={purpose.name}>
+                      {purpose.versions.map((version) => (
+                        <option key={version.id} value={version.id}>
+                          {purpose.name} — {version.version.toUpperCase()}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  Example: attach SaaS Work V1. You can still edit the campaign HTML after attaching.
+                </p>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-sm font-medium text-slate-300">
                   HTML content
                 </label>
                 <textarea
@@ -857,7 +1215,7 @@ export function CampaignsPage() {
                     setForm((f) => ({ ...f, html_content: e.target.value }))
                   }
                   className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
-                  placeholder={'<h1>Hello!</h1>\n<p>Watch our video: <a href="https://youtu.be/YOUR_ID">Click here</a></p>'}
+                  placeholder="Supports {{name}}, {{Company}}, {{Industrial Company}} from your CSV"
                 />
               </div>
             </div>
@@ -924,17 +1282,52 @@ export function CampaignsPage() {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-500">
+                  <th className="pb-3 pr-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all campaigns"
+                      checked={
+                        campaigns.some((campaign) => campaign.status !== "sending") &&
+                        selectedCampaignIds.length ===
+                          campaigns.filter((campaign) => campaign.status !== "sending").length
+                      }
+                      onChange={(event) =>
+                        setSelectedCampaignIds(
+                          event.target.checked
+                            ? campaigns
+                                .filter((campaign) => campaign.status !== "sending")
+                                .map((campaign) => campaign.id)
+                            : [],
+                        )
+                      }
+                    />
+                  </th>
                   <th className="pb-3 pr-4 font-medium">Name</th>
                   <th className="pb-3 pr-4 font-medium">Subject</th>
                   <th className="pb-3 pr-4 font-medium">List</th>
                   <th className="pb-3 pr-4 font-medium">Status</th>
-                  <th className="pb-3 pr-4 font-medium">Recipients</th>
+                  <th className="pb-3 pr-4 font-medium">Emails</th>
                   <th className="pb-3 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {campaigns.map((c) => (
                   <tr key={c.id} className="border-b border-slate-800/60">
+                    <td className="py-3 pr-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${c.name}`}
+                        disabled={c.status === "sending"}
+                        checked={selectedCampaignIds.includes(c.id)}
+                        onChange={(event) =>
+                          setSelectedCampaignIds((current) =>
+                            event.target.checked
+                              ? [...current, c.id]
+                              : current.filter((id) => id !== c.id),
+                          )
+                        }
+                      />
+                    </td>
                     <td className="py-3 pr-4 font-medium text-slate-200">{c.name}</td>
                     <td className="py-3 pr-4 text-slate-400">{c.subject || "—"}</td>
                     <td className="py-3 pr-4 text-slate-500">
@@ -949,7 +1342,11 @@ export function CampaignsPage() {
                         {c.status}
                       </span>
                       {c.status === "sending" && (
-                        <p className="mt-1 text-xs text-amber-300">Sending in background…</p>
+                        <p className="mt-1 text-xs text-amber-300">
+                          {sendProgress?.campaignId === c.id
+                            ? `Next mail in ${sendProgress.nextInSeconds}s`
+                            : "Sending in background…"}
+                        </p>
                       )}
                     </td>
                     <td className="py-3 pr-4 text-slate-400">
@@ -1030,6 +1427,25 @@ export function CampaignsPage() {
                             </button>
                           </>
                         )}
+                        {c.status === "paused" && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openTracking(c.id)}
+                              className="text-xs text-indigo-400 hover:underline"
+                            >
+                              Tracking
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSend(c.id)}
+                              disabled={isSending}
+                              className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                            >
+                              Resume Send
+                            </button>
+                          </>
+                        )}
                         {c.status === "sent" && (
                           <>
                             <button
@@ -1091,7 +1507,7 @@ export function CampaignsPage() {
                 {trackingData && (
                   <p className="text-sm text-slate-400">
                     {trackingData.campaign_name} — {trackingData.opened}/{trackingData.delivered}{" "}
-                    opened ({trackingData.open_rate}%)
+                    opened emails ({trackingData.open_rate}%)
                   </p>
                 )}
               </div>
@@ -1123,47 +1539,46 @@ export function CampaignsPage() {
                     <thead>
                       <tr className="border-b border-slate-800 text-slate-500">
                         <th className="pb-2 pr-3 font-medium">Email</th>
-                        <th className="pb-2 pr-3 font-medium">Inbox / Spam</th>
-                        <th className="pb-2 font-medium">Opened</th>
+                        <th className="pb-2 pr-3 font-medium">Sent Emails</th>
+                        <th className="pb-2 font-medium">Opened Emails</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {trackingData.recipients.map((row) => (
-                        <tr key={row.email} className="border-b border-slate-800/60">
-                          <td className="py-2 pr-3 text-slate-200">{row.email}</td>
-                          <td className="py-2 pr-3">
-                            <span
-                              className={
-                                row.folder === "inbox"
-                                  ? "text-emerald-400"
-                                  : row.folder === "failed"
-                                    ? "text-red-400"
-                                    : "text-amber-300"
-                              }
-                            >
-                              {row.folder_label}
-                            </span>
-                          </td>
-                          <td className="py-2">
-                            {row.opened ? (
-                              <span className="text-emerald-400">Yes</span>
-                            ) : row.delivered ? (
-                              <div className="space-y-1">
+                      {trackingData.recipients.map((row) => {
+                        const sendLabel =
+                          row.queue_status === "sent"
+                            ? "Sent"
+                            : row.queue_status === "failed"
+                              ? "Fail"
+                              : row.queue_status === "skipped"
+                                ? "Skipped"
+                                : row.queue_status === "sending"
+                                  ? "Sending…"
+                                  : "Pending";
+                        const sendClass =
+                          row.queue_status === "sent"
+                            ? "text-emerald-400"
+                            : row.queue_status === "failed"
+                              ? "text-red-400"
+                              : row.queue_status === "sending"
+                                ? "text-amber-300"
+                                : "text-slate-400";
+                        return (
+                          <tr key={row.email} className="border-b border-slate-800/60">
+                            <td className="py-2 pr-3 text-slate-200">{row.email}</td>
+                            <td className={`py-2 pr-3 font-medium ${sendClass}`}>{sendLabel}</td>
+                            <td className="py-2">
+                              {row.opened ? (
+                                <span className="text-emerald-400">Yes</span>
+                              ) : row.delivered ? (
                                 <span className="text-slate-400">No</span>
-                                {row.confirm_url && (
-                                  <p className="text-xs text-slate-500">
-                                    Recipient must click{" "}
-                                    <span className="text-slate-400">Confirm you received this email</span>{" "}
-                                    in the message.
-                                  </p>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-slate-500">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                              ) : (
+                                <span className="text-slate-500">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </>

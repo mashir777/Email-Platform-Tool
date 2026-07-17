@@ -41,6 +41,13 @@ class Campaign(models.Model):
         blank=True,
         related_name="campaigns",
     )
+    message_version = models.ForeignKey(
+        "email_templates.MessageVersion",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="campaigns",
+    )
     scheduled_at = models.DateTimeField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     recipient_count = models.PositiveIntegerField(default=0)

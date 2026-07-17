@@ -4,9 +4,11 @@ import { NavLink } from "react-router-dom";
 import {
   IconChart,
   IconDashboard,
+  IconEye,
   IconGlobe,
   IconLogout,
   IconMail,
+  IconMessages,
   IconServer,
   IconSettings,
   IconUsers,
@@ -17,7 +19,9 @@ import { useAuth } from "@/context/AuthContext";
 const iconMap: Record<NavIcon, ComponentType<{ className?: string }>> = {
   dashboard: IconDashboard,
   users: IconUsers,
+  messages: IconMessages,
   mail: IconMail,
+  eye: IconEye,
   server: IconServer,
   globe: IconGlobe,
   chart: IconChart,

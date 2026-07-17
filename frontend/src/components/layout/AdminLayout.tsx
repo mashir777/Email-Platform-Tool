@@ -11,12 +11,20 @@ const pageMeta: Record<string, { title: string; subtitle?: string }> = {
     subtitle: "Overview of your email marketing platform",
   },
   "/subscribers": {
-    title: "Subscribers",
-    subtitle: "Manage your contact lists and audiences",
+    title: "Emails",
+    subtitle: "Manage your email lists",
+  },
+  "/messages": {
+    title: "Messages",
+    subtitle: "Purpose-based email messages with V1, V2, and V3",
   },
   "/campaigns": {
     title: "Campaigns",
     subtitle: "Create and manage email campaigns",
+  },
+  "/tracking": {
+    title: "Tracking",
+    subtitle: "See delivery and open status for each email",
   },
   "/smtp": {
     title: "SMTP Providers",
@@ -28,7 +36,7 @@ const pageMeta: Record<string, { title: string; subtitle?: string }> = {
   },
   "/reports": {
     title: "Reports",
-    subtitle: "Analytics and performance insights",
+    subtitle: "Daily sent emails, opens, and campaign performance",
   },
   "/settings": {
     title: "Settings",

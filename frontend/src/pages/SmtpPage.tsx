@@ -55,6 +55,7 @@ export function SmtpPage() {
   const [form, setForm] = useState(emptyForm);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [selectedServerIds, setSelectedServerIds] = useState<string[]>([]);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -178,6 +179,22 @@ export function SmtpPage() {
     }
   }
 
+  async function handleDeleteSelected() {
+    if (
+      !selectedServerIds.length ||
+      !confirm(`Delete ${selectedServerIds.length} selected SMTP server(s)?`)
+    ) return;
+    try {
+      await Promise.all(selectedServerIds.map((id) => smtpApi.deleteSmtpServer(id)));
+      setSelectedServerIds([]);
+      setNotice("Selected SMTP servers deleted.");
+      await loadData();
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to delete selected servers");
+      await loadData();
+    }
+  }
+
   async function handleSetDefault(id: string) {
     try {
       await smtpApi.setDefaultSmtpServer(id);
@@ -289,6 +306,11 @@ export function SmtpPage() {
             className="flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
           />
           <Button onClick={openCreate}>+ Add Server</Button>
+          {selectedServerIds.length > 0 && (
+            <Button variant="danger" onClick={() => void handleDeleteSelected()}>
+              Delete Selected ({selectedServerIds.length})
+            </Button>
+          )}
           <label className="cursor-pointer">
             <span className="inline-flex items-center justify-center rounded-lg border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-medium text-slate-100 hover:bg-slate-700">
               {isImporting ? "Importing..." : "Import CSV (20 mailboxes)"}
@@ -389,7 +411,7 @@ export function SmtpPage() {
               />
               <p className="sm:col-span-2 -mt-1 text-xs text-slate-500">
                 This is the sender address recipients see. Must be @yourdomain.com — not Gmail.
-                Gmail addresses go in Subscribers / Campaign recipient list.
+                Gmail addresses go in Emails / Campaign recipient list.
               </p>
               <Input
                 label="From name"
@@ -491,6 +513,18 @@ export function SmtpPage() {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-500">
+                  <th className="pb-3 pr-3">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all SMTP servers"
+                      checked={servers.length > 0 && selectedServerIds.length === servers.length}
+                      onChange={(event) =>
+                        setSelectedServerIds(
+                          event.target.checked ? servers.map((server) => server.id) : [],
+                        )
+                      }
+                    />
+                  </th>
                   <th className="pb-3 pr-4 font-medium">Name</th>
                   <th className="pb-3 pr-4 font-medium">Host</th>
                   <th className="pb-3 pr-4 font-medium">From</th>
@@ -503,6 +537,20 @@ export function SmtpPage() {
               <tbody>
                 {servers.map((server) => (
                   <tr key={server.id} className="border-b border-slate-800/60">
+                    <td className="py-3 pr-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${server.name}`}
+                        checked={selectedServerIds.includes(server.id)}
+                        onChange={(event) =>
+                          setSelectedServerIds((current) =>
+                            event.target.checked
+                              ? [...current, server.id]
+                              : current.filter((id) => id !== server.id),
+                          )
+                        }
+                      />
+                    </td>
                     <td className="py-3 pr-4">
                       <div className="font-medium text-slate-200">{server.name}</div>
                       {server.is_default && (

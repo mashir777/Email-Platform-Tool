@@ -1,10 +1,17 @@
 import { apiRequest } from "@/api/client";
-import type { LoginResponse, User } from "@/types/auth";
+import type { LoginResponse, RegisterPayload, RegisterResponse, User } from "@/types/auth";
 
 export async function login(email: string, password: string): Promise<LoginResponse> {
   return apiRequest<LoginResponse>("/login/", {
     method: "POST",
     body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function register(payload: RegisterPayload): Promise<RegisterResponse> {
+  return apiRequest<RegisterResponse>("/register/", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
@@ -40,5 +47,19 @@ export async function changePassword(data: {
   await apiRequest<unknown>("/password/change/", {
     method: "POST",
     body: JSON.stringify(data),
+  });
+}
+
+export async function verifyEmail(token: string): Promise<{ user: User }> {
+  return apiRequest<{ user: User }>("/email/verify/", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function resendVerificationEmail(): Promise<void> {
+  await apiRequest<unknown>("/email/resend/", {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }

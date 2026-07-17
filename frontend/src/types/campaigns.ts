@@ -20,6 +20,12 @@ export interface Campaign {
     name: string;
     subscriber_count?: number;
   } | null;
+  message_version: {
+    id: string;
+    version: "v1" | "v2" | "v3";
+    subject: string;
+    html_content: string;
+  } | null;
   scheduled_at: string | null;
   sent_at: string | null;
   recipient_count: number;

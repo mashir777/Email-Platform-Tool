@@ -6,6 +6,7 @@ from campaigns.views import (
     CampaignDeliveryStatusView,
     CampaignDetailView,
     CampaignDuplicateView,
+    CampaignPauseView,
     CampaignScheduleView,
     CampaignSendView,
     CampaignStatsView,
@@ -22,6 +23,7 @@ urlpatterns = [
     path("<uuid:campaign_id>/send/", CampaignSendView.as_view(), name="send"),
     path("<uuid:campaign_id>/test-send/", CampaignTestSendView.as_view(), name="test-send"),
     path("<uuid:campaign_id>/cancel/", CampaignCancelView.as_view(), name="cancel"),
+    path("<uuid:campaign_id>/pause/", CampaignPauseView.as_view(), name="pause"),
     path("<uuid:campaign_id>/duplicate/", CampaignDuplicateView.as_view(), name="duplicate"),
     path(
         "<uuid:campaign_id>/delivery-status/",

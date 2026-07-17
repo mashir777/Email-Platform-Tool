@@ -1,0 +1,7 @@
+RewriteEngine On
+
+# https://datrixworld.com/t/o/TOKEN/  -> open.php
+RewriteRule ^o/([A-Za-z0-9_=-]+)/?$ open.php?path=$1 [L,QSA]
+
+# https://datrixworld.com/t/c/TOKEN/  -> click.php
+RewriteRule ^c/([A-Za-z0-9_=-]+)/?$ click.php?path=$1 [L,QSA]

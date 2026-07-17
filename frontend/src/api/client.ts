@@ -1,7 +1,7 @@
 import { tokenStorage } from "@/lib/storage";
 import type { ApiError, ApiResponse, AuthTokens } from "@/types/auth";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const API_BASE = String(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export class ApiClientError extends Error {
   errors: Record<string, string[] | string>;
@@ -75,7 +75,27 @@ async function request<T>(
     }
   }
 
-  const data = (await response.json()) as ApiResponse<T>;
+  const raw = await response.text();
+  let data: ApiResponse<T>;
+  try {
+    data = (raw ? JSON.parse(raw) : null) as ApiResponse<T>;
+  } catch {
+    throw new ApiClientError({
+      detail: [
+        response.ok
+          ? "Server returned an invalid response. Restart the backend and try again."
+          : `Backend error (${response.status}). Is the Django server running?`,
+      ],
+    });
+  }
+
+  if (!data) {
+    throw new ApiClientError({
+      detail: [
+        "Cannot reach the backend at http://127.0.0.1:8000. Start it with: .venv\\Scripts\\python.exe manage.py runserver",
+      ],
+    });
+  }
 
   if (!response.ok || !data.success) {
     throw new ApiClientError(parseErrors(data));

@@ -16,7 +16,9 @@ class SubscriberList(models.Model):
     )
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    source_filename = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
+    is_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -55,6 +57,9 @@ class Subscriber(models.Model):
     email = models.EmailField()
     first_name = models.CharField(max_length=150, blank=True)
     last_name = models.CharField(max_length=150, blank=True)
+    company = models.CharField(max_length=255, blank=True)
+    industrial_company = models.CharField(max_length=255, blank=True)
+    custom_fields = models.JSONField(default=dict, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     status = models.CharField(
         max_length=20,

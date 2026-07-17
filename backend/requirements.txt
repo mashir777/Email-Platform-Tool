@@ -23,6 +23,12 @@ dnspython>=2.6,<3.0
 Pillow>=10.4,<12.0
 python-dateutil>=2.9,<3.0
 
+# Email open/click tracking (vendored package)
+# Install: pip install -e "./vendor/pytracking[django,html]"
+./vendor/pytracking[django,html]
+lxml>=3.6.1
+django-ipware>=2.0.0
+
 # Development
 ipython>=8.26,<9.0
 

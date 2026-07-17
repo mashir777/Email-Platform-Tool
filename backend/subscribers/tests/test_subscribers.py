@@ -1,4 +1,5 @@
 import io
+from unittest.mock import patch
 
 from django.urls import reverse
 from rest_framework import status
@@ -67,7 +68,6 @@ class SubscriberAPITestCase(APITestCase):
         self.assertEqual(emails, ["vip@example.com"])
 
     def test_import_csv(self):
-        subscriber_list = SubscriberList.objects.create(owner=self.user, name="Import")
         csv_content = (
             "email,first_name,last_name\n"
             "import1@gmail.com,Ann,Ali\n"
@@ -78,17 +78,73 @@ class SubscriberAPITestCase(APITestCase):
 
         response = self.client.post(
             reverse("api:v1:subscribers:import"),
-            {"file": file, "list_id": str(subscriber_list.id)},
+            {"file": file},
             format="multipart",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["data"]["import"]["created"], 1)
-        self.assertEqual(response.data["data"]["import"]["rejected"], 1)
+        import_data = response.data["data"]["import"]
+        self.assertEqual(import_data["created"], 1)
+        self.assertEqual(import_data["rejected"], 1)
+        self.assertEqual(import_data["source_filename"], "subscribers.csv")
+        self.assertEqual(import_data["list_name"], "subscribers")
         self.assertTrue(
             Subscriber.objects.filter(owner=self.user, email="import1@gmail.com").exists(),
         )
         imported = Subscriber.objects.get(owner=self.user, email="import1@gmail.com")
-        self.assertEqual(imported.lists.filter(name="Import").count(), 1)
+        self.assertEqual(imported.lists.filter(name="subscribers").count(), 1)
+        self.assertEqual(
+            SubscriberList.objects.get(owner=self.user, name="subscribers").source_filename,
+            "subscribers.csv",
+        )
+
+    def test_import_csv_ignores_unrelated_selected_list(self):
+        """Importing while another list is selected must not merge into that list."""
+        other_list = SubscriberList.objects.create(
+            owner=self.user,
+            name="15-7-2026",
+            source_filename="15-7-2026.csv",
+        )
+        csv_content = "email,first_name\nnewlead@gmail.com,Ada\n"
+        file = io.BytesIO(csv_content.encode("utf-8"))
+        file.name = "14-7-2026.csv"
+
+        response = self.client.post(
+            reverse("api:v1:subscribers:import"),
+            {"file": file, "list_id": str(other_list.id)},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        import_data = response.data["data"]["import"]
+        self.assertEqual(import_data["list_name"], "14-7-2026")
+        self.assertEqual(import_data["source_filename"], "14-7-2026.csv")
+
+        imported = Subscriber.objects.get(owner=self.user, email="newlead@gmail.com")
+        self.assertEqual(imported.lists.filter(name="14-7-2026").count(), 1)
+        self.assertEqual(imported.lists.filter(id=other_list.id).count(), 0)
+
+        other_list.refresh_from_db()
+        self.assertEqual(other_list.source_filename, "15-7-2026.csv")
+        self.assertEqual(other_list.name, "15-7-2026")
+
+    def test_import_csv_reuses_matching_list_id(self):
+        matching = SubscriberList.objects.create(
+            owner=self.user,
+            name="14-7-2026",
+            source_filename="14-7-2026.csv",
+        )
+        csv_content = "email\nmatch@gmail.com\n"
+        file = io.BytesIO(csv_content.encode("utf-8"))
+        file.name = "14-7-2026.csv"
+
+        response = self.client.post(
+            reverse("api:v1:subscribers:import"),
+            {"file": file, "list_id": str(matching.id)},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        imported = Subscriber.objects.get(owner=self.user, email="match@gmail.com")
+        self.assertEqual(imported.lists.filter(id=matching.id).count(), 1)
+        self.assertEqual(response.data["data"]["import"]["list_id"], str(matching.id))
 
     def test_import_csv_with_list_column(self):
         csv_content = (
@@ -110,6 +166,27 @@ class SubscriberAPITestCase(APITestCase):
         subscriber = Subscriber.objects.get(owner=self.user, email="csvlist@gmail.com")
         self.assertEqual(subscriber.lists.count(), 1)
         self.assertEqual(subscriber.lists.first().name, "AshirShahzad")
+
+    def test_import_csv_company_columns(self):
+        csv_content = (
+            "email,name,Company,Industrial Company,Job Title,City\n"
+            "lead@gmail.com,Sarah,Acme Logistics,logistics,Founder,Lahore\n"
+        )
+        file = io.BytesIO(csv_content.encode("utf-8"))
+        file.name = "subscribers.csv"
+
+        response = self.client.post(
+            reverse("api:v1:subscribers:import"),
+            {"file": file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        subscriber = Subscriber.objects.get(owner=self.user, email="lead@gmail.com")
+        self.assertEqual(subscriber.first_name, "Sarah")
+        self.assertEqual(subscriber.company, "Acme Logistics")
+        self.assertEqual(subscriber.industrial_company, "logistics")
+        self.assertEqual(subscriber.custom_fields["Job Title"], "Founder")
+        self.assertEqual(subscriber.custom_fields["City"], "Lahore")
 
     def test_import_csv_assigns_existing_subscriber_to_list_column(self):
         subscriber = Subscriber.objects.create(
@@ -162,3 +239,109 @@ class SubscriberAPITestCase(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch("subscribers.reacher.verify_emails")
+    def test_verify_list_with_reacher_in_place(self, mock_verify):
+        mock_verify.return_value = {
+            "good@gmail.com": {
+                "is_reachable": "safe",
+                "misc": {"is_disposable": False},
+                "mx": {"accepts_mail": True},
+                "smtp": {"is_deliverable": True, "is_disabled": False, "is_catch_all": False},
+                "syntax": {"is_valid_syntax": True},
+            },
+            "fahad.munir@synqtech.net": {
+                "is_reachable": "risky",
+                "misc": {"is_disposable": False},
+                "mx": {"accepts_mail": True},
+                "smtp": {
+                    "is_deliverable": True,
+                    "is_disabled": False,
+                    "is_catch_all": True,
+                },
+                "syntax": {"is_valid_syntax": True},
+            },
+            "spam@tempmail.com": {
+                "is_reachable": "risky",
+                "misc": {"is_disposable": True},
+                "mx": {"accepts_mail": True},
+                "smtp": {},
+                "syntax": {"is_valid_syntax": True},
+            },
+            "bad@gmail.com": {
+                "is_reachable": "invalid",
+                "misc": {"is_disposable": False},
+                "mx": {"accepts_mail": True},
+                "smtp": {"is_deliverable": False, "is_disabled": False, "is_catch_all": False},
+                "syntax": {"is_valid_syntax": True},
+            },
+        }
+        subscriber_list = SubscriberList.objects.create(owner=self.user, name="Leads")
+        for email in (
+            "good@gmail.com",
+            "fahad.munir@synqtech.net",
+            "spam@tempmail.com",
+            "bad@gmail.com",
+        ):
+            subscriber = Subscriber.objects.create(owner=self.user, email=email)
+            subscriber.lists.add(subscriber_list)
+
+        response = self.client.post(
+            reverse("api:v1:subscribers:verify-list"),
+            {"list_id": str(subscriber_list.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payload = response.data["data"]["verify"]
+        self.assertEqual(payload["total"], 4)
+        self.assertEqual(payload["kept"], 3)
+        self.assertEqual(payload["removed"], 1)
+        self.assertEqual(subscriber_list.subscribers.count(), 3)
+        self.assertTrue(
+            Subscriber.objects.filter(owner=self.user, email="fahad.munir@synqtech.net").exists(),
+        )
+        self.assertTrue(
+            Subscriber.objects.filter(owner=self.user, email="spam@tempmail.com").exists(),
+        )
+        self.assertFalse(
+            Subscriber.objects.filter(owner=self.user, email="bad@gmail.com").exists(),
+        )
+        subscriber_list.refresh_from_db()
+        self.assertTrue(subscriber_list.is_verified)
+
+    @patch("subscribers.services.verify_list_with_reacher")
+    @patch("subscribers.services.import_subscribers_from_csv")
+    def test_filter_csv_imports_then_verifies(self, mock_import, mock_verify):
+        mock_import.return_value = {
+            "created": 2,
+            "updated": 0,
+            "skipped": 0,
+            "rejected": 0,
+            "list_id": "11111111-1111-1111-1111-111111111111",
+            "list_name": "leads",
+            "source_filename": "leads.csv",
+        }
+        mock_verify.return_value = {
+            "list_id": "11111111-1111-1111-1111-111111111111",
+            "list_name": "leads",
+            "total": 2,
+            "kept": 1,
+            "removed": 1,
+            "removed_breakdown": {"invalid": 1},
+            "is_verified": True,
+        }
+        file = io.BytesIO(b"email\ngood@gmail.com\nbad@gmail.com\n")
+        file.name = "leads.csv"
+
+        response = self.client.post(
+            reverse("api:v1:subscribers:filter-csv"),
+            {"file": file},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payload = response.data["data"]["filter"]
+        self.assertEqual(payload["list_name"], "leads")
+        self.assertEqual(payload["verify"]["kept"], 1)
+        self.assertTrue(payload["is_verified"])
+        mock_import.assert_called_once()
+        mock_verify.assert_called_once()

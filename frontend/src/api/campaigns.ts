@@ -24,6 +24,7 @@ export async function createCampaign(data: {
   html_content?: string;
   text_content?: string;
   subscriber_list_id?: string;
+  message_version_id?: string | null;
 }): Promise<{ campaign: Campaign }> {
   return apiV1Request("/campaigns/", {
     method: "POST",
@@ -41,6 +42,7 @@ export async function updateCampaign(
     html_content: string;
     text_content: string;
     subscriber_list_id: string | null;
+    message_version_id: string | null;
   }>,
 ): Promise<{ campaign: Campaign }> {
   return apiV1Request(`/campaigns/${id}/`, {
@@ -67,6 +69,10 @@ export async function cancelCampaign(id: string): Promise<{ campaign: Campaign }
   return apiV1Request(`/campaigns/${id}/cancel/`, { method: "POST" });
 }
 
+export async function pauseCampaign(id: string): Promise<{ campaign: Campaign }> {
+  return apiV1Request(`/campaigns/${id}/pause/`, { method: "POST" });
+}
+
 export async function sendCampaign(
   id: string,
 ): Promise<{
@@ -76,6 +82,7 @@ export async function sendCampaign(
     failed: number;
     pending?: number;
     send_interval_seconds?: number;
+    next_send_in_seconds?: number;
     active_smtp_servers?: number;
     is_rate_limited?: boolean;
     errors?: { email: string; error: string }[];
@@ -127,6 +134,17 @@ export interface CampaignDeliveryTracking {
 
 export async function fetchCampaignDeliveryStatus(
   id: string,
-): Promise<{ tracking: CampaignDeliveryTracking }> {
+): Promise<{
+  tracking: CampaignDeliveryTracking;
+  send_summary?: {
+    sent: number;
+    failed: number;
+    pending?: number;
+    send_interval_seconds?: number;
+    next_send_in_seconds?: number;
+    active_smtp_servers?: number;
+    is_rate_limited?: boolean;
+  };
+}> {
   return apiV1Request(`/campaigns/${id}/delivery-status/`);
 }

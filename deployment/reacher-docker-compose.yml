@@ -1,0 +1,10 @@
+# Reacher / check-if-email-exists
+# Source clone: D:\reacherhqcheck-if-email-exists.git\check-if-email-exists
+# Image: https://hub.docker.com/r/reacherhq/backend (same project)
+services:
+  reacher:
+    image: reacherhq/backend:latest
+    container_name: email-platform-reacher
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

@@ -11,13 +11,14 @@ import {
 import * as authApi from "@/api/auth";
 import { ApiClientError } from "@/api/client";
 import { tokenStorage } from "@/lib/storage";
-import type { User } from "@/types/auth";
+import type { RegisterPayload, User } from "@/types/auth";
 
 interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
+  register: (payload: RegisterPayload) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -57,6 +58,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
   }, []);
 
+  const register = useCallback(async (payload: RegisterPayload) => {
+    const data = await authApi.register(payload);
+    tokenStorage.setTokens(data.tokens.access, data.tokens.refresh);
+    setUser(data.user);
+  }, []);
+
   const logout = useCallback(async () => {
     const refresh = tokenStorage.getRefresh();
     try {
@@ -77,10 +84,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading,
       isAuthenticated: Boolean(user),
       login,
+      register,
       logout,
       refreshUser,
     }),
-    [user, isLoading, login, logout, refreshUser],
+    [user, isLoading, login, register, logout, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
