@@ -90,10 +90,11 @@ async function request<T>(
   }
 
   if (!data) {
+    const hint = API_BASE
+      ? `Cannot reach the backend at ${API_BASE}.`
+      : "Cannot reach the backend API. On Vercel, confirm the Django service is deployed and /api routes work.";
     throw new ApiClientError({
-      detail: [
-        "Cannot reach the backend at http://127.0.0.1:8000. Start it with: .venv\\Scripts\\python.exe manage.py runserver",
-      ],
+      detail: [hint],
     });
   }
 

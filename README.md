@@ -94,29 +94,46 @@ npm install
 npm run dev
 ```
 
-## Deploy Frontend to Vercel
+## Deploy Frontend + Django API to Vercel
 
-The React frontend is configured for Vercel (`vercel.json` at repo root).
+Signup/login HTTP API can run on Vercel. Campaign queues (Celery workers) still need a real VPS later.
 
-1. Push this repo to GitHub (already set as `origin`).
-2. Go to [vercel.com](https://vercel.com) → **Add New Project** → import `mashir777/Email-Platform-Tool`.
-3. Set **Root Directory** to `frontend` (required).
-4. Build settings should be: Install `npm install`, Build `npm run build`, Output `dist`.
-5. Add Environment Variable:
-   - `VITE_API_BASE_URL` = your public Django API URL (e.g. `https://api.yourdomain.com`) — **not** `localhost`
-6. Deploy. Your app URL will look like `https://email-platform-tool.vercel.app`.
+### 1) Create a free Postgres database
 
-**Important:** Only the frontend runs on Vercel. Django (MySQL, Redis, Celery) must stay on a VPS / Railway / Render / Cloudflare Tunnel. After you have the Vercel URL, set on the backend:
+Use [Neon](https://neon.tech) or Vercel Storage → Postgres. Copy the `DATABASE_URL`.
 
-```env
-FRONTEND_URL=https://your-app.vercel.app
-CORS_ALLOWED_ORIGINS=...,https://your-app.vercel.app
-CSRF_TRUSTED_ORIGINS=...,https://your-app.vercel.app
-```
+### 2) Vercel project settings
 
-Then restart Django.
+1. Framework Preset: **Services** (required for monorepo `vercel.json` services)
+2. Root Directory: **`.`** (repo root — not `frontend`)
+3. Env vars (Production + Preview):
 
-## Production Deployment (Backend / VPS)
+| Name | Example |
+|------|---------|
+| `DJANGO_SECRET_KEY` | long random string |
+| `DJANGO_SETTINGS_MODULE` | `config.settings.vercel` |
+| `DATABASE_URL` | `postgresql://...` from Neon |
+| `DJANGO_ALLOWED_HOSTS` | `.vercel.app` |
+| `EMAIL_HOST` | `smtp.gmail.com` |
+| `EMAIL_PORT` | `587` |
+| `EMAIL_USE_TLS` | `True` |
+| `EMAIL_HOST_USER` | your Gmail |
+| `EMAIL_HOST_PASSWORD` | Gmail app password |
+| `DEFAULT_FROM_EMAIL` | your Gmail |
+
+**Do not set** `VITE_API_BASE_URL` (leave empty). The app calls same-origin `/api/...`.
+
+### 3) Redeploy
+
+Push to `main` or click Redeploy. Build runs `migrate` automatically.
+
+### 4) Test
+
+Open your Vercel URL → Signup. Verification email sends in-request (Celery eager mode).
+
+Campaign sending / Celery Beat still need a VPS later — this Vercel setup is for **auth API + UI** only.
+
+## Production Deployment (Full Backend / VPS)
 
 See deployment guides:
 

@@ -4,12 +4,14 @@ Django settings for email_platform project.
 Split settings: base.py (shared), development.py, production.py.
 """
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
 import environ
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
@@ -81,7 +83,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],
+        "DIRS": [p for p in [BASE_DIR / "templates"] if p.is_dir()],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -139,7 +141,8 @@ USE_TZ = True
 
 STATIC_URL = env("STATIC_URL", default="/static/")
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_DIRS = [BASE_DIR / "static"]
+_static_dir = BASE_DIR / "static"
+STATICFILES_DIRS = [_static_dir] if _static_dir.is_dir() else []
 
 MEDIA_URL = env("MEDIA_URL", default="/media/")
 MEDIA_ROOT = BASE_DIR / "media"
@@ -292,7 +295,7 @@ SPECTACULAR_SETTINGS = {
     ],
 }
 
-LOG_DIR = BASE_DIR / "logs"
+LOG_DIR = Path("/tmp/email_platform_logs") if IS_VERCEL else (BASE_DIR / "logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 LOGGING = {
