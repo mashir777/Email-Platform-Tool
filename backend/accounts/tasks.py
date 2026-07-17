@@ -29,27 +29,61 @@ def _build_password_reset_message(user, reset_url):
     )
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_verification_email(self, user_id, raw_token):
+def _require_smtp_config():
+    host = (settings.EMAIL_HOST or "").strip()
+    user = (settings.EMAIL_HOST_USER or "").strip()
+    password = (settings.EMAIL_HOST_PASSWORD or "").strip()
+    if not host or not user or not password:
+        raise RuntimeError(
+            "SMTP not configured. On Vercel set EMAIL_HOST, EMAIL_HOST_USER, "
+            "EMAIL_HOST_PASSWORD, and DEFAULT_FROM_EMAIL."
+        )
+
+
+def deliver_verification_email(user_id, raw_token):
     from accounts.models import User
 
+    _require_smtp_config()
     try:
         user = User.objects.get(pk=user_id)
     except User.DoesNotExist:
         return
 
     verify_url = f"{settings.FRONTEND_URL}/verify-email?token={raw_token}"
+    send_mail(
+        subject="Verify your Email Platform account",
+        message=_build_verification_message(user, verify_url),
+        from_email=settings.DEFAULT_FROM_EMAIL or settings.EMAIL_HOST_USER,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+
+
+def deliver_password_reset_email(user_id, raw_token):
+    from accounts.models import User
+
+    _require_smtp_config()
     try:
-        send_mail(
-            subject="Verify your Email Platform account",
-            message=_build_verification_message(user, verify_url),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
+        user = User.objects.get(pk=user_id)
+    except User.DoesNotExist:
+        return
+
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={raw_token}"
+    send_mail(
+        subject="Reset your Email Platform password",
+        message=_build_password_reset_message(user, reset_url),
+        from_email=settings.DEFAULT_FROM_EMAIL or settings.EMAIL_HOST_USER,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def send_verification_email(self, user_id, raw_token):
+    try:
+        deliver_verification_email(user_id, raw_token)
     except Exception as exc:
         logger.exception("Verification email failed for user_id=%s", user_id)
-        # On Vercel there is no worker retry loop worth relying on.
         if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
             return
         raise self.retry(exc=exc)
@@ -57,22 +91,8 @@ def send_verification_email(self, user_id, raw_token):
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def send_password_reset_email(self, user_id, raw_token):
-    from accounts.models import User
-
     try:
-        user = User.objects.get(pk=user_id)
-    except User.DoesNotExist:
-        return
-
-    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={raw_token}"
-    try:
-        send_mail(
-            subject="Reset your Email Platform password",
-            message=_build_password_reset_message(user, reset_url),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
+        deliver_password_reset_email(user_id, raw_token)
     except Exception as exc:
         logger.exception("Password reset email failed for user_id=%s", user_id)
         if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):

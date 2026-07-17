@@ -189,7 +189,21 @@ def resend_verification_email(*, user):
         UserToken.TokenType.EMAIL_VERIFICATION,
         lifetime_hours=settings.EMAIL_VERIFICATION_TOKEN_HOURS,
     )
-    send_verification_email.delay(str(user.id), raw_token)
+    # Send synchronously so the API can report real SMTP errors to the UI.
+    from accounts.tasks import deliver_verification_email
+
+    try:
+        deliver_verification_email(str(user.id), raw_token)
+    except Exception as exc:
+        raise ValidationError(
+            {
+                "detail": [
+                    f"Could not send verification email: {exc}. "
+                    "Check Vercel EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD "
+                    "(Gmail App Password) and DEFAULT_FROM_EMAIL."
+                ]
+            }
+        ) from exc
 
 
 @transaction.atomic

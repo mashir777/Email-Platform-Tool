@@ -85,3 +85,8 @@ LOGGING = {
 
 # Avoid redirect loops behind Vercel proxy on edge cases
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=False)
+
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+# Gmail / SMTP (must be set in Vercel env — empty host means emails never leave)
+if not (EMAIL_HOST or "").strip():
+    EMAIL_HOST = env("EMAIL_HOST", default="smtp.gmail.com")
