@@ -88,7 +88,21 @@ def register_user(*, email, password, **extra_fields):
         UserToken.TokenType.EMAIL_VERIFICATION,
         lifetime_hours=settings.EMAIL_VERIFICATION_TOKEN_HOURS,
     )
-    send_verification_email.delay(str(user.id), raw_token)
+    # Email is sent after the DB commit (see register_user_and_notify).
+    return user, raw_token
+
+
+def register_user_and_notify(*, email, password, **extra_fields):
+    user, raw_token = register_user(email=email, password=password, **extra_fields)
+    try:
+        send_verification_email.delay(str(user.id), raw_token)
+    except Exception:
+        # Signup must succeed even if SMTP/Celery fails (e.g. on Vercel).
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Failed to queue verification email for user_id=%s", user.id
+        )
     return user
 
 

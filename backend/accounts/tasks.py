@@ -1,6 +1,9 @@
 from celery import shared_task
 from django.conf import settings
 from django.core.mail import send_mail
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _build_verification_message(user, verify_url):
@@ -36,13 +39,20 @@ def send_verification_email(self, user_id, raw_token):
         return
 
     verify_url = f"{settings.FRONTEND_URL}/verify-email?token={raw_token}"
-    send_mail(
-        subject="Verify your Email Platform account",
-        message=_build_verification_message(user, verify_url),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[user.email],
-        fail_silently=False,
-    )
+    try:
+        send_mail(
+            subject="Verify your Email Platform account",
+            message=_build_verification_message(user, verify_url),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception as exc:
+        logger.exception("Verification email failed for user_id=%s", user_id)
+        # On Vercel there is no worker retry loop worth relying on.
+        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+            return
+        raise self.retry(exc=exc)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
@@ -55,10 +65,16 @@ def send_password_reset_email(self, user_id, raw_token):
         return
 
     reset_url = f"{settings.FRONTEND_URL}/reset-password?token={raw_token}"
-    send_mail(
-        subject="Reset your Email Platform password",
-        message=_build_password_reset_message(user, reset_url),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[user.email],
-        fail_silently=False,
-    )
+    try:
+        send_mail(
+            subject="Reset your Email Platform password",
+            message=_build_password_reset_message(user, reset_url),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception as exc:
+        logger.exception("Password reset email failed for user_id=%s", user_id)
+        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+            return
+        raise self.retry(exc=exc)

@@ -15,7 +15,8 @@ from .production import LOGGING, env
 
 # In-process Celery (verification emails still send during the request)
 CELERY_TASK_ALWAYS_EAGER = True
-CELERY_TASK_EAGER_PROPAGATES = True
+# Do not turn signup into HTTP 500 if Gmail SMTP fails
+CELERY_TASK_EAGER_PROPAGATES = False
 
 CACHES = {
     "default": {

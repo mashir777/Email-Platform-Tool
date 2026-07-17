@@ -44,7 +44,7 @@ class RegisterView(APIView):
 
         data = serializer.validated_data
         try:
-            user = services.register_user(
+            user = services.register_user_and_notify(
                 email=data["email"],
                 password=data["password"],
                 first_name=data.get("first_name", ""),
@@ -53,10 +53,18 @@ class RegisterView(APIView):
                 company_name=data.get("company_name", ""),
                 timezone=data.get("timezone", "UTC"),
             )
+            tokens = services.get_tokens_for_user(user)
         except ValidationError as exc:
             return error_response(exc.message_dict, status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            import logging
 
-        tokens = services.get_tokens_for_user(user)
+            logging.getLogger(__name__).exception("Registration failed")
+            return error_response(
+                {"detail": ["Registration failed. Check server logs."]},
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
         return success_response(
             data={
                 "user": UserSerializer(user, context={"request": request}).data,

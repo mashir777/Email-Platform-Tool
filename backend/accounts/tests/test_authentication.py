@@ -277,7 +277,7 @@ class PermissionsTestCase(APITestCase):
 
 class ServicesTestCase(APITestCase):
     def test_register_user_creates_verification_token(self):
-        user = register_user(
+        user, _raw = register_user(
             email="service@example.com",
             password="SecurePass123!",
         )
