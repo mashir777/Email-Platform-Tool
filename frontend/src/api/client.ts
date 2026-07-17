@@ -66,7 +66,16 @@ async function request<T>(
     headers.set("Authorization", `Bearer ${access}`);
   }
 
-  const response = await fetch(url, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(url, { ...options, headers });
+  } catch {
+    throw new ApiClientError({
+      detail: [
+        "Network error reaching the API. Hard-refresh the page (Ctrl+Shift+R), confirm you are on the Vercel production URL, then try again.",
+      ],
+    });
+  }
 
   if (response.status === 401 && retry && access) {
     const newAccess = await refreshAccessToken();
@@ -76,9 +85,9 @@ async function request<T>(
   }
 
   const raw = await response.text();
-  let data: ApiResponse<T>;
+  let data: ApiResponse<T> | null = null;
   try {
-    data = (raw ? JSON.parse(raw) : null) as ApiResponse<T>;
+    data = raw ? (JSON.parse(raw) as ApiResponse<T>) : null;
   } catch {
     throw new ApiClientError({
       detail: [
@@ -90,11 +99,10 @@ async function request<T>(
   }
 
   if (!data) {
-    const hint = API_BASE
-      ? `Cannot reach the backend at ${API_BASE}.`
-      : "Cannot reach the backend API. On Vercel, confirm the Django service is deployed and /api routes work.";
     throw new ApiClientError({
-      detail: [hint],
+      detail: [
+        `Empty response from API (${response.status}). Open DevTools → Network → register request and retry after a hard refresh.`,
+      ],
     });
   }
 
