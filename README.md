@@ -100,10 +100,11 @@ The React frontend is configured for Vercel (`vercel.json` at repo root).
 
 1. Push this repo to GitHub (already set as `origin`).
 2. Go to [vercel.com](https://vercel.com) → **Add New Project** → import `mashir777/Email-Platform-Tool`.
-3. Vercel will detect Vite from root `vercel.json`. Leave Framework / Build settings as-is.
-4. Add Environment Variable:
+3. Set **Root Directory** to `frontend` (required).
+4. Build settings should be: Install `npm install`, Build `npm run build`, Output `dist`.
+5. Add Environment Variable:
    - `VITE_API_BASE_URL` = your public Django API URL (e.g. `https://api.yourdomain.com`) — **not** `localhost`
-5. Deploy. Your app URL will look like `https://email-platform-tool.vercel.app`.
+6. Deploy. Your app URL will look like `https://email-platform-tool.vercel.app`.
 
 **Important:** Only the frontend runs on Vercel. Django (MySQL, Redis, Celery) must stay on a VPS / Railway / Render / Cloudflare Tunnel. After you have the Vercel URL, set on the backend:
 
