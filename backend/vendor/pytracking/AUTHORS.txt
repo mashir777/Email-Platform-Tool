@@ -1,0 +1,10 @@
+pytracking was originally created in 2016 by Resulto.
+
+Here is an inevitably incomplete list of MUCH-APPRECIATED CONTRIBUTORS --
+people who have submitted patches, reported bugs, and generally made the
+project that much better:
+
+Barthélémy Dagenais <bart@powergo.ca>
+Jonathan <machadofjonathan@gmail.com>
+Mohammad Javad Naderi <mjnaderi@gmail.com>
+Gabriel Le Breton <lebreton.gabriel@gmail.com>
