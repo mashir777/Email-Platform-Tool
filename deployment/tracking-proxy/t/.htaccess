@@ -1,7 +1,20 @@
-RewriteEngine On
+# Serve this /t/ folder DIRECTLY (static + PHP) instead of routing it through the
+# datrixworld.com Django app (Phusion Passenger). Without this, Django catches
+# /t/... and returns 404, so the tracking pixel never records opens.
 
-# https://datrixworld.com/t/o/TOKEN/  -> open.php
-RewriteRule ^o/([A-Za-z0-9_=-]+)/?$ open.php?path=$1 [L,QSA]
+# Disable the Python/Django (Passenger) app for this directory and below.
+PassengerEnabled off
 
-# https://datrixworld.com/t/c/TOKEN/  -> click.php
-RewriteRule ^c/([A-Za-z0-9_=-]+)/?$ click.php?path=$1 [L,QSA]
+# Do not let Passenger/mod_rewrite hijack these URLs.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^ - [L]
+</IfModule>
+
+# Make sure PHP runs and plain files are served as-is.
+Options -MultiViews +ExecCGI
+DirectoryIndex ping.txt
+
+<FilesMatch "\.php$">
+    SetHandler application/x-httpd-php
+</FilesMatch>

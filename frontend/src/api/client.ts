@@ -125,8 +125,25 @@ export function apiV1Url(path: string): string {
 export function getTrackingBaseUrl(): string {
   const configured = import.meta.env.VITE_TRACKING_PUBLIC_BASE_URL;
   if (configured) return String(configured).replace(/\/$/, "");
+
   if (typeof window !== "undefined") {
-    return `http://${window.location.hostname}:8000`;
+    const { hostname, origin, protocol } = window.location;
+    const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+    // Vercel / production: API and /t/ tracking are same-origin.
+    if (!isLocal && protocol.startsWith("http")) {
+      return origin;
+    }
+    if (API_BASE) {
+      try {
+        const api = new URL(API_BASE, window.location.origin);
+        if (api.hostname !== "localhost" && api.hostname !== "127.0.0.1") {
+          return api.origin;
+        }
+      } catch {
+        // ignore invalid API_BASE
+      }
+    }
+    return `http://${hostname}:8000`;
   }
   return "http://127.0.0.1:8000";
 }

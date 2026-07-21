@@ -41,7 +41,7 @@ export function SignupPage() {
         last_name: lastName.trim(),
         company_name: companyName.trim(),
       });
-      navigate("/check-email", { replace: true });
+      navigate("/dashboard", { replace: true });
     } catch (err) {
       setError(getAuthErrorMessage(err));
     } finally {
@@ -135,7 +135,7 @@ export function SignupPage() {
           </Button>
 
           <p className="mt-3 text-center text-xs text-slate-500">
-            We&apos;ll send a verification link to your email after signup.
+            After signup you can sign in and use the dashboard right away.
           </p>
 
           <p className="mt-4 text-center text-sm text-slate-400">

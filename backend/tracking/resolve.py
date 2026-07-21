@@ -18,6 +18,17 @@ def _is_loopback_url(url: str) -> bool:
 
 def resolve_tracking_base_url(*, request=None, header_value: str = "") -> str:
     """Prefer a public tracking URL; fall back to localhost for same-PC link clicks."""
+    from tracking.services import get_live_origin_backend_url, resolve_send_tracking_base_url
+
+    header_value = (header_value or "").strip()
+    resolved = resolve_send_tracking_base_url(header_value=header_value)
+    if resolved:
+        return resolved.rstrip("/")
+
+    origin = get_live_origin_backend_url()
+    if origin and not _is_loopback_url(origin):
+        return origin.rstrip("/")
+
     header_value = (header_value or "").strip()
     env_url = (getattr(settings, "TRACKING_PUBLIC_BASE_URL", "") or "").strip()
 

@@ -4,15 +4,7 @@ DEBUG = True
 
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "*"])
 
-# Local development uses MySQL Workbench (Oracle MySQL 8.4 / same DB_* as .env).
-# Do not override with SQLite — data must stay consistent across restarts.
-# DATABASES inherited from base.py (DB_ENGINE/DB_NAME/DB_USER/DB_PASSWORD/DB_HOST/DB_PORT)
-
-# Avoid "Too many connections": do not keep idle pooled MySQL sockets open.
-# (runserver reloads + send timers were leaking CONN_MAX_AGE connections.)
-DATABASES["default"]["CONN_MAX_AGE"] = 0
-
-# Local development: in-memory cache (no Redis required)
+# SQLite (db.sqlite3) — inherited from base.py
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
@@ -49,6 +41,30 @@ for _tracking_url_key in ("TRACKING_PUBLIC_BASE_URL", "TRACKING_ORIGIN_BACKEND_U
 # Tunnel hostnames rotate; allow any *.trycloudflare.com subdomain in local / tunnel mode.
 if ".trycloudflare.com" not in ALLOWED_HOSTS:
     ALLOWED_HOSTS = [*ALLOWED_HOSTS, ".trycloudflare.com"]
+
+_public_tracking = (env("TRACKING_PUBLIC_BASE_URL", default="http://127.0.0.1:8000") or "").strip()
+_origin_tracking = (env("TRACKING_ORIGIN_BACKEND_URL", default="") or "").strip().rstrip("/")
+_public_host = (urlparse(_public_tracking).hostname or "").lower()
+if _origin_tracking and _public_host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+    # Gmail cannot load 127.0.0.1 pixels — use tunnel / public backend URL from .env.
+    TRACKING_PUBLIC_BASE_URL = _origin_tracking
+
+import logging as _logging
+
+try:
+    from tracking.services import resolve_send_tracking_base_url as _resolve_send_tracking_base_url
+
+    _tracking_base = _resolve_send_tracking_base_url()
+    if _tracking_base:
+        if _public_host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+            TRACKING_PUBLIC_BASE_URL = _tracking_base
+        _logging.getLogger(__name__).info("Email open tracking URL: %s", _tracking_base)
+    else:
+        _logging.getLogger(__name__).warning(
+            "Email open tracking needs a public URL. Run: cloudflared tunnel --url http://127.0.0.1:8000",
+        )
+except Exception:
+    pass
 
 EMAIL_BACKEND = env(
     "EMAIL_BACKEND",

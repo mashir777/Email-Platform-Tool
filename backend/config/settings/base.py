@@ -103,18 +103,8 @@ AUTH_USER_MODEL = "accounts.User"
 
 DATABASES = {
     "default": {
-        "ENGINE": env("DB_ENGINE", default="django.db.backends.mysql"),
-        "NAME": env("DB_NAME", default="email_platform"),
-        "USER": env("DB_USER", default="email_platform_user"),
-        "PASSWORD": env("DB_PASSWORD", default=""),
-        "HOST": env("DB_HOST", default="127.0.0.1"),
-        "PORT": env("DB_PORT", default="3306"),
-        "OPTIONS": {
-            "charset": "utf8mb4",
-            "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
-        },
-        "CONN_MAX_AGE": env.int("DB_CONN_MAX_AGE", default=60),
-        "ATOMIC_REQUESTS": True,
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
 }
 
@@ -255,6 +245,10 @@ TRACKING_ORIGIN_BACKEND_URL = env("TRACKING_ORIGIN_BACKEND_URL", default="")
 # make Gmail hide images and show “This message appears suspicious”.
 TRACKING_REQUIRE_SAME_DOMAIN = env.bool("TRACKING_REQUIRE_SAME_DOMAIN", default=True)
 TRACKING_FORCE_REMOTE_PIXEL = env.bool("TRACKING_FORCE_REMOTE_PIXEL", default=False)
+# Same-domain open-tracking proxy (tunnel-free). When set, email pixels point at
+# {TRACKING_PROXY_BASE_URL}/t/open.php and opens are pulled back via events.php.
+TRACKING_PROXY_BASE_URL = env("TRACKING_PROXY_BASE_URL", default="")
+TRACKING_PROXY_SECRET = env("TRACKING_PROXY_SECRET", default="")
 
 # Reacher (check-if-email-exists) — self-hosted email verification for CSV filtering
 REACHER_BACKEND_URL = env("REACHER_BACKEND_URL", default="http://127.0.0.1:8080")

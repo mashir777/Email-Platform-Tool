@@ -44,7 +44,7 @@ class AuthAPITestCase(APITestCase):
         self.assertTrue(response.data["success"])
         self.assertIn("tokens", response.data["data"])
         self.assertEqual(response.data["data"]["user"]["role"], UserRole.CLIENT)
-        self.assertFalse(response.data["data"]["user"]["is_verified"])
+        self.assertTrue(response.data["data"]["user"]["is_verified"])
 
     def test_register_duplicate_email(self):
         response = self.client.post(
@@ -276,20 +276,13 @@ class PermissionsTestCase(APITestCase):
 
 
 class ServicesTestCase(APITestCase):
-    def test_register_user_creates_verification_token(self):
-        user, _raw = register_user(
+    def test_register_user_is_verified_on_signup(self):
+        user = register_user(
             email="service@example.com",
             password="SecurePass123!",
         )
         self.assertEqual(user.role, UserRole.CLIENT)
-        self.assertFalse(user.is_verified)
-        self.assertTrue(
-            UserToken.objects.filter(
-                user=user,
-                token_type=UserToken.TokenType.EMAIL_VERIFICATION,
-                is_used=False,
-            ).exists()
-        )
+        self.assertTrue(user.is_verified)
 
     def test_token_hash_is_stored_not_plaintext(self):
         user = User.objects.create_user(

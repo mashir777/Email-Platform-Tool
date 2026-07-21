@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from urllib.parse import urlparse
 
@@ -23,6 +24,14 @@ TRANSPARENT_GIF_BYTES = (
 )
 
 
+def get_tracking_proxy_base_url() -> str:
+    """Same-domain PHP proxy base (e.g. https://datrixworld.com) when configured."""
+    base = (getattr(settings, "TRACKING_PROXY_BASE_URL", "") or "").strip().rstrip("/")
+    if base and not is_local_tracking_url(base):
+        return base
+    return ""
+
+
 def get_tracking_base_url(campaign_id: str | None = None) -> str:
     request_base = get_request_tracking_base_url()
     if request_base:
@@ -31,6 +40,9 @@ def get_tracking_base_url(campaign_id: str | None = None) -> str:
         cached = get_campaign_tracking_base_url(str(campaign_id))
         if cached:
             return cached.rstrip("/")
+    origin = get_live_origin_backend_url()
+    if origin and not is_local_tracking_url(origin):
+        return origin.rstrip("/")
     return getattr(settings, "TRACKING_PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
@@ -81,6 +93,33 @@ def _same_domain_proxy_is_live(base_url: str) -> bool:
     return False
 
 
+def _resolve_public_a_records(host: str) -> list[str]:
+    """Resolve A records via Cloudflare DoH (local Windows DNS often breaks trycloudflare)."""
+    import json
+    import urllib.parse
+    import urllib.request
+
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+        return []
+    url = "https://1.1.1.1/dns-query?" + urllib.parse.urlencode(
+        {"name": host, "type": "A"},
+    )
+    try:
+        request = urllib.request.Request(url, headers={"accept": "application/dns-json"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    if int(data.get("Status", 0) or 0) != 0:
+        return []
+    ips: list[str] = []
+    for answer in data.get("Answer") or []:
+        if int(answer.get("type") or 0) == 1 and answer.get("data"):
+            ips.append(str(answer["data"]).strip())
+    return ips
+
+
 def _origin_backend_reachable(base_url: str) -> bool:
     """True when Cloudflare/Django origin can serve tracking (admin or /t/)."""
     import urllib.error
@@ -88,6 +127,13 @@ def _origin_backend_reachable(base_url: str) -> bool:
 
     if not base_url or is_local_tracking_url(base_url):
         return False
+
+    host = (urlparse(base_url).hostname or "").strip().lower()
+    # Prefer public DoH — avoids false negatives when local DNS cannot resolve
+    # trycloudflare.com (Gmail still can, so pixels must still be embedded).
+    if host and host.endswith("trycloudflare.com"):
+        return bool(_resolve_public_a_records(host))
+
     # Prefer paths that prove Django email_platform is up — not a random marketing site.
     for probe in (
         base_url.rstrip("/") + "/admin/",
@@ -108,24 +154,27 @@ def _origin_backend_reachable(base_url: str) -> bool:
 
 
 def get_live_origin_backend_url() -> str:
-    """Prefer live cloudflared quick-tunnel hostname when available."""
+    """Prefer a publicly-resolvable cloudflared quick-tunnel hostname when available."""
     import json
     import urllib.request
 
     configured = (getattr(settings, "TRACKING_ORIGIN_BACKEND_URL", "") or "").strip().rstrip("/")
+    candidates: list[str] = []
     try:
         with urllib.request.urlopen("http://127.0.0.1:20241/quicktunnel", timeout=1.5) as response:
             data = json.loads(response.read().decode("utf-8", errors="replace"))
             host = (data.get("hostname") or "").strip()
             if host:
-                candidate = f"https://{host}"
-                if _origin_backend_reachable(candidate):
-                    return candidate
+                candidates.append(f"https://{host}")
     except Exception:
         pass
-    if configured and _origin_backend_reachable(configured):
-        return configured
-    # Never return a dead/stale tunnel URL — callers must fall back cleanly.
+    if configured and not is_local_tracking_url(configured):
+        candidates.append(configured)
+
+    for url in candidates:
+        # Skip stale quicktunnel hostnames (DNS NXDOMAIN) — those emails never open-track.
+        if _origin_backend_reachable(url):
+            return url.rstrip("/")
     return ""
 
 
@@ -133,13 +182,18 @@ def can_embed_remote_tracking(
     *,
     campaign_id: str | None = None,
     from_email: str = "",
+    tracking_base: str | None = None,
 ) -> bool:
     """Embed a pixel whenever we have any public tracking host configured/live."""
     if getattr(settings, "TRACKING_FORCE_REMOTE_PIXEL", False):
         return True
-    base = resolve_email_tracking_base_url(
-        campaign_id=campaign_id,
-        from_email=from_email,
+    base = (
+        tracking_base
+        or resolve_email_tracking_base_url(
+            campaign_id=campaign_id,
+            from_email=from_email,
+        )
+        or get_live_origin_backend_url()
     )
     return bool(base) and not is_local_tracking_url(base)
 
@@ -165,13 +219,29 @@ def resolve_email_tracking_base_url(
         host = (urlparse(url).hostname or "").lower()
         return host == from_domain or host.endswith("." + from_domain)
 
-    # 1) Same-domain PHP proxy (best for Gmail).
-    if public and _matches_from(public) and _same_domain_proxy_is_live(public):
-        return public.rstrip("/")
+    # 1) Same-domain PHP proxy (best for Gmail when From matches sending domain).
+    if public and _same_domain_proxy_is_live(public):
+        if not from_domain or _matches_from(public):
+            return public.rstrip("/")
 
     # 2) Live Cloudflare → Django (works when client loads images).
     if origin and _origin_backend_reachable(origin):
         return origin.rstrip("/")
+
+    # 3) Vercel / same deployment serves /t/ on the public app URL (no PHP proxy).
+    if public and not is_local_tracking_url(public):
+        if os.environ.get("VERCEL") or (urlparse(public).hostname or "").endswith(".vercel.app"):
+            return public.rstrip("/")
+
+    # 4) Configured public URL (tunnel, hosted app). Skip dead datrixworld without /t/ proxy.
+    if public and not is_local_tracking_url(public):
+        host = (urlparse(public).hostname or "").lower()
+        if "datrixworld.com" not in host or _same_domain_proxy_is_live(public):
+            return public.rstrip("/")
+
+    configured_origin = (getattr(settings, "TRACKING_ORIGIN_BACKEND_URL", "") or "").strip().rstrip("/")
+    if configured_origin and not is_local_tracking_url(configured_origin):
+        return configured_origin
 
     if (
         configured
@@ -182,6 +252,39 @@ def resolve_email_tracking_base_url(
 
     # Do NOT use public domain when /t/ proxy is missing — that embeds dead pixels.
     return (origin or "").rstrip("/")
+
+
+def resolve_send_tracking_base_url(
+    *,
+    campaign_id: str | None = None,
+    from_email: str = "",
+    header_value: str = "",
+) -> str:
+    """Best public URL for pixels in outgoing email (Gmail must reach this host)."""
+    header_value = (header_value or "").strip().rstrip("/")
+    if header_value and not is_local_tracking_url(header_value):
+        return header_value
+
+    for candidate in (
+        resolve_email_tracking_base_url(campaign_id=campaign_id, from_email=from_email),
+        get_live_origin_backend_url(),
+        get_request_tracking_base_url(),
+        get_campaign_tracking_base_url(str(campaign_id)) if campaign_id else None,
+    ):
+        value = (candidate or "").strip().rstrip("/")
+        if value and not is_local_tracking_url(value):
+            return value
+
+    origin = (getattr(settings, "TRACKING_ORIGIN_BACKEND_URL", "") or "").strip().rstrip("/")
+    if origin and not is_local_tracking_url(origin):
+        return origin
+
+    public = (getattr(settings, "TRACKING_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if public and not is_local_tracking_url(public):
+        host = (urlparse(public).hostname or "").lower()
+        if "datrixworld.com" not in host or _same_domain_proxy_is_live(public):
+            return public
+    return ""
 
 
 def build_open_pixel_url(queue_item_id: str, *, campaign_id: str | None = None) -> str:
@@ -220,16 +323,24 @@ def inject_open_tracking_pixel(
     html_content = _prepare_html_document(html_content)
     html_content = _strip_manual_confirm_banner(html_content)
 
-    tracking_base = resolve_email_tracking_base_url(
+    # Preferred: always-on same-domain PHP proxy (no tunnel, Gmail-safe).
+    proxy_base = get_tracking_proxy_base_url()
+    if proxy_base:
+        return _inject_proxy_open_pixel(
+            html_content,
+            queue_item_id,
+            campaign_id=campaign_id,
+        )
+
+    tracking_base = resolve_send_tracking_base_url(
         campaign_id=campaign_id,
         from_email=from_email,
     )
-    if not tracking_base:
-        tracking_base = get_live_origin_backend_url()
-    if not tracking_base or not can_embed_remote_tracking(
-        campaign_id=campaign_id,
-        from_email=from_email,
-    ):
+    if not tracking_base or is_local_tracking_url(tracking_base):
+        origin = get_live_origin_backend_url()
+        if origin and not is_local_tracking_url(origin):
+            tracking_base = origin
+    if not tracking_base or is_local_tracking_url(tracking_base):
         logger.info(
             "Skipping remote tracking pixel (no reachable host) base=%s",
             tracking_base,
@@ -271,6 +382,11 @@ def inject_open_tracking_pixel(
         tracked,
         queue_item_id,
         campaign_id=campaign_id,
+        base_url=tracking_base,
+    )
+    tracked = _append_legacy_open_pixel(
+        tracked,
+        queue_item_id,
         base_url=tracking_base,
     )
 
@@ -326,6 +442,42 @@ def _strip_manual_confirm_banner(html_content: str) -> str:
     return html_content
 
 
+def _insert_tracking_img(html_content: str, img: str) -> str:
+    if re.search(r"<body[^>]*>", html_content, flags=re.IGNORECASE):
+        html_content = re.sub(
+            r"(<body[^>]*>)",
+            r"\1" + img,
+            html_content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    if re.search(r"</body>", html_content, flags=re.IGNORECASE):
+        return re.sub(
+            r"</body>",
+            img + "</body>",
+            html_content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    return img + html_content + img
+
+
+def _append_legacy_open_pixel(
+    html_content: str,
+    queue_item_id: str,
+    *,
+    base_url: str,
+) -> str:
+    """Signed-token pixel — records opens even if pytracking decode fails."""
+    token = make_open_token(str(queue_item_id))
+    pixel_url = f"{base_url.rstrip('/')}/t/open/{token}.gif"
+    img = (
+        f'<img src="{pixel_url}" width="1" height="1" alt="" border="0" '
+        f'style="width:1px;height:1px;border:0;display:block" />'
+    )
+    return _insert_tracking_img(html_content, img)
+
+
 def _append_open_pixel(
     html_content: str,
     queue_item_id: str,
@@ -347,23 +499,128 @@ def _append_open_pixel(
         f'<img src="{pixel_url}" width="1" height="1" alt="" border="0" '
         f'style="width:1px;height:1px;border:0;display:block" />'
     )
-    if re.search(r"<body[^>]*>", html_content, flags=re.IGNORECASE):
-        html_content = re.sub(
-            r"(<body[^>]*>)",
-            r"\1" + img,
-            html_content,
-            count=1,
-            flags=re.IGNORECASE,
+    return _insert_tracking_img(html_content, img)
+
+
+def _build_tracking_path(queue_item_id: str, *, campaign_id: str | None = None) -> str:
+    """URL-safe pytracking path that encodes queue_item_id (decodable by us)."""
+    from tracking.pytracking_config import build_pytracking_configuration
+    import pytracking
+
+    url = pytracking.get_open_tracking_url(
+        {"queue_item_id": str(queue_item_id)},
+        configuration=build_pytracking_configuration(
+            campaign_id=campaign_id,
+            base_url="https://tracking.local",
+        ),
+    )
+    return url.rstrip("/").split("/t/o/")[-1]
+
+
+def _inject_proxy_open_pixel(
+    html_content: str,
+    queue_item_id: str,
+    *,
+    campaign_id: str | None = None,
+) -> str:
+    """Embed a single same-domain pixel: {proxy}/t/open.php?path={token}.
+
+    Links are left untouched (no click proxy) so they keep working with no tunnel.
+    """
+    import urllib.parse
+
+    proxy_base = get_tracking_proxy_base_url()
+    if not proxy_base:
+        return html_content
+
+    path = _build_tracking_path(queue_item_id, campaign_id=campaign_id)
+    pixel_url = f"{proxy_base}/t/open.php?path={urllib.parse.quote(path, safe='')}"
+    img = (
+        f'<img src="{pixel_url}" width="1" height="1" alt="" border="0" '
+        f'style="width:1px;height:1px;border:0;display:block" />'
+    )
+    if campaign_id:
+        from tracking.context import set_campaign_tracking_base_url
+
+        set_campaign_tracking_base_url(str(campaign_id), proxy_base)
+    logger.info(
+        "Embedding same-domain proxy pixel base=%s queue_item=%s",
+        proxy_base,
+        queue_item_id,
+    )
+    return _insert_tracking_img(html_content, img)
+
+
+def _queue_item_id_from_tracking_path(path: str) -> str | None:
+    """Decode a logged pixel path back to a queue_item_id (pytracking or signed)."""
+    path = (path or "").strip().strip("/")
+    if path.endswith(".gif"):
+        path = path[:-4]
+    if not path:
+        return None
+    try:
+        from tracking.pytracking_config import build_pytracking_configuration
+        import pytracking
+
+        result = pytracking.get_open_tracking_result(
+            path,
+            configuration=build_pytracking_configuration(base_url="https://tracking.local"),
         )
-    if re.search(r"</body>", html_content, flags=re.IGNORECASE):
-        return re.sub(
-            r"</body>",
-            img + "</body>",
-            html_content,
-            count=1,
-            flags=re.IGNORECASE,
-        )
-    return img + html_content + img
+        queue_item_id = (result.metadata or {}).get("queue_item_id")
+        if queue_item_id:
+            return str(queue_item_id)
+    except Exception:
+        pass
+    try:
+        from tracking.tokens import parse_open_token
+
+        return parse_open_token(path)
+    except Exception:
+        return None
+
+
+def sync_remote_opens(*, campaign=None) -> int:
+    """Pull opens from the same-domain PHP proxy (events.php) into TrackingEvent.
+
+    Idempotent: record_open_event ignores already-opened recipients. Returns the
+    number of open events processed (new or existing).
+    """
+    import json
+    import urllib.parse
+    import urllib.request
+
+    base = get_tracking_proxy_base_url()
+    secret = (getattr(settings, "TRACKING_PROXY_SECRET", "") or "").strip()
+    if not base or not secret:
+        return 0
+
+    url = f"{base}/t/events.php?" + urllib.parse.urlencode({"key": secret, "limit": 5000})
+    try:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("sync_remote_opens: could not read %s/t/events.php (%s)", base, exc)
+        return 0
+
+    processed = 0
+    for event in data.get("events") or []:
+        path = (event.get("path") or "").strip()
+        if not path:
+            continue
+        queue_item_id = _queue_item_id_from_tracking_path(path)
+        if not queue_item_id:
+            continue
+        try:
+            if record_open_event(
+                queue_item_id=queue_item_id,
+                user_agent=str(event.get("ua") or "")[:300],
+                ip_address=str(event.get("ip") or "")[:64],
+            ):
+                processed += 1
+        except Exception:
+            continue
+    return processed
 
 
 def _wrap_links_for_tracking(
@@ -457,8 +714,21 @@ def get_campaign_delivery_tracking(*, campaign) -> dict:
         for event in delivered_events
         if event.metadata.get("queue_item_id")
     }
-    campaign_tracking_base = get_campaign_tracking_base_url(str(campaign.id))
+    proxy_base = get_tracking_proxy_base_url()
+    campaign_tracking_base = (
+        proxy_base
+        or resolve_send_tracking_base_url(campaign_id=str(campaign.id))
+        or get_campaign_tracking_base_url(str(campaign.id))
+    )
     uses_local_tracking = is_local_tracking_url(campaign_tracking_base)
+    sent_bases = [b for b in tracking_base_by_queue_item.values() if b]
+    dead_sent_pixel = False
+    for sent_base in sent_bases:
+        host = (urlparse(str(sent_base)).hostname or "").lower()
+        if host.endswith("trycloudflare.com") and not _resolve_public_a_records(host):
+            dead_sent_pixel = True
+            break
+    tracking_ready = bool(campaign_tracking_base) and not uses_local_tracking
 
     recipients = []
     opened_count = 0
@@ -481,7 +751,7 @@ def get_campaign_delivery_tracking(*, campaign) -> dict:
             or get_tracking_base_url(str(campaign.id))
         )
         confirm_url = None
-        if item.status == EmailQueueItem.Status.SENT:
+        if item.status == EmailQueueItem.Status.SENT and item_tracking_base:
             token = make_open_token(str(item.id))
             confirm_url = f"{item_tracking_base.rstrip('/')}/t/view/{token}/"
         recipients.append(
@@ -500,6 +770,30 @@ def get_campaign_delivery_tracking(*, campaign) -> dict:
         )
 
     total_sent = campaign.queue_items.filter(status=EmailQueueItem.Status.SENT).count()
+    if proxy_base:
+        dead_sent_pixel = False
+        tracking_ready = True
+        note = (
+            "Opened = Yes when the recipient opens the email and Gmail loads images. "
+            "Opens are recorded on your domain (no tunnel needed) — click Refresh to sync."
+        )
+    elif dead_sent_pixel:
+        note = (
+            "Opened stays No because this send used an expired Cloudflare tunnel URL. "
+            "Keep cloudflared running, then Send Again / resend this campaign, "
+            "open the NEW email in Gmail (images on), then Refresh."
+        )
+    elif uses_local_tracking or not tracking_ready:
+        note = (
+            "Opened = Yes when Gmail loads the tracking image. "
+            "Start Django on port 8000 and run: cloudflared tunnel --url http://127.0.0.1:8000 "
+            "— then resend this campaign (old emails have no pixel)."
+        )
+    else:
+        note = (
+            "Opened = Yes when the recipient opens the email and Gmail loads images "
+            "(pytracking pixel). Refresh after opening the newest sent email."
+        )
     return {
         "campaign_id": str(campaign.id),
         "campaign_name": campaign.name,
@@ -509,14 +803,6 @@ def get_campaign_delivery_tracking(*, campaign) -> dict:
         "not_opened": max(delivered_count - opened_count, 0),
         "open_rate": round((opened_count / delivered_count) * 100, 1) if delivered_count else 0.0,
         "recipients": recipients,
-        "note": (
-            "Opened = Yes when Gmail loads the tracking image after the email is opened. "
-            "Resend after tracking fixes — old emails without a pixel cannot update."
-            if uses_local_tracking
-            else (
-                "Opened = Yes when the recipient opens the email and Gmail loads images "
-                "(pytracking pixel). Refresh after opening the newest sent email."
-            )
-        ),
-        "tracking_configured": not uses_local_tracking,
+        "note": note,
+        "tracking_configured": tracking_ready and not dead_sent_pixel,
     }

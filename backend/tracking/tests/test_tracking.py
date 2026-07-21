@@ -16,6 +16,7 @@ from tracking.tokens import make_open_token
     TRACKING_PUBLIC_BASE_URL="https://mail.example.com",
     TRACKING_REQUIRE_SAME_DOMAIN=False,
     TRACKING_FORCE_REMOTE_PIXEL=True,
+    TRACKING_PROXY_BASE_URL="",
 )
 class TrackingTestCase(TestCase):
     def setUp(self):
@@ -133,6 +134,35 @@ class TrackingTestCase(TestCase):
             )
         self.assertIn("https://datrixworld.com/t/o/", html)
         self.assertNotIn("trycloudflare.com", html)
+
+    @override_settings(
+        TRACKING_PROXY_BASE_URL="https://datrixworld.com",
+        TRACKING_PROXY_SECRET="test-secret",
+    )
+    def test_same_domain_proxy_pixel_and_decode(self):
+        from tracking.services import _queue_item_id_from_tracking_path
+
+        html = inject_open_tracking_pixel(
+            self.campaign.html_content,
+            str(self.queue_item.id),
+            campaign_id=str(self.campaign.id),
+            from_email="info@datrixworld.com",
+        )
+        # Same-domain, tunnel-free pixel; links are left untouched.
+        self.assertIn("https://datrixworld.com/t/open.php?path=", html)
+        self.assertNotIn("/t/c/", html)
+        self.assertNotIn("trycloudflare.com", html)
+
+        import re
+        import urllib.parse
+
+        match = re.search(r"open\.php\?path=([^\"&]+)", html)
+        self.assertIsNotNone(match)
+        path = urllib.parse.unquote(match.group(1))
+        self.assertEqual(
+            _queue_item_id_from_tracking_path(path),
+            str(self.queue_item.id),
+        )
 
     def test_view_link_records_open(self):
         token = make_open_token(str(self.queue_item.id))

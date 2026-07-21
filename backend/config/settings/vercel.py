@@ -2,13 +2,14 @@
 Vercel serverless settings — signup/login HTTP API only.
 
 No Redis/Celery workers: tasks run eagerly in-process.
-Requires DATABASE_URL (Neon / Vercel Postgres).
+Uses Django SQLite (db.sqlite3).
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .production import *  # noqa: F401, F403
 from .production import LOGGING, env
@@ -25,17 +26,12 @@ CACHES = {
     }
 }
 
-# Serverless: do not keep persistent DB connections
-if env("DATABASE_URL", default=""):
-    DATABASES = {
-        "default": env.db("DATABASE_URL"),
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
-    DATABASES["default"]["CONN_MAX_AGE"] = 0
-    DATABASES["default"]["ATOMIC_REQUESTS"] = True
-    # Neon / managed Postgres
-    DATABASES["default"].setdefault("OPTIONS", {})
-    if "sslmode" not in DATABASES["default"]["OPTIONS"]:
-        DATABASES["default"]["OPTIONS"]["sslmode"] = "require"
+}
 
 _hosts = env.list("DJANGO_ALLOWED_HOSTS", default=[])
 _extra = [
@@ -51,6 +47,16 @@ if vercel_url:
     CSRF_TRUSTED_ORIGINS = list(dict.fromkeys([*CSRF_TRUSTED_ORIGINS, origin]))
     if FRONTEND_URL.startswith(("http://localhost", "http://127.0.0.1")):
         FRONTEND_URL = origin
+    # Gmail must load pixels from a public URL — not 127.0.0.1.
+    _configured_tracking = (env("TRACKING_PUBLIC_BASE_URL", default="") or "").strip()
+    _tracking_host = urlparse(_configured_tracking).hostname if _configured_tracking else ""
+    if not _configured_tracking or _tracking_host in {
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "::1",
+    }:
+        TRACKING_PUBLIC_BASE_URL = origin
 
 # Prefer console logs on read-only / ephemeral FS
 _log_dir = Path("/tmp/email_platform_logs")

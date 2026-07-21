@@ -87,6 +87,65 @@ class CampaignSendAPITestCase(APITestCase):
         )
         mock_send.assert_called_once()
 
+    @patch("sending.services.send_message_via_smtp")
+    def test_csv_reimport_allows_resend_to_same_subscriber(self, mock_send):
+        mock_send.return_value = None
+        from sending.services import queue_campaign
+
+        self.client.post(
+            reverse("api:v1:campaigns:send", args=[self.campaign.id]),
+            format="json",
+        )
+        self.assertEqual(
+            EmailQueueItem.objects.get(campaign=self.campaign).status,
+            EmailQueueItem.Status.SENT,
+        )
+
+        campaign_two = Campaign.objects.create(
+            owner=self.user,
+            name="Welcome again",
+            subject="Hello again",
+            html_content="<p>Hi again</p>",
+            from_email="noreply@example.com",
+            from_name="Example",
+            subscriber_list=self.subscriber_list,
+        )
+        queued_before_reimport = queue_campaign(campaign=campaign_two)
+        self.assertEqual(queued_before_reimport, 0)
+        self.assertEqual(
+            EmailQueueItem.objects.get(campaign=campaign_two).status,
+            EmailQueueItem.Status.SKIPPED,
+        )
+
+        import io
+
+        from subscribers.services import import_subscribers_from_csv
+
+        csv_content = "email,first_name\nsub@gmail.com,Sam\n"
+        csv_file = io.BytesIO(csv_content.encode("utf-8"))
+        csv_file.name = "Newsletter.csv"
+        import_subscribers_from_csv(
+            owner=self.user,
+            csv_file=csv_file,
+            list_id=str(self.subscriber_list.id),
+        )
+
+        campaign_three = Campaign.objects.create(
+            owner=self.user,
+            name="After CSV re-import",
+            subject="Hello again",
+            html_content="<p>Hi again</p>",
+            from_email="noreply@example.com",
+            from_name="Example",
+            subscriber_list=self.subscriber_list,
+        )
+        queued_after_reimport = queue_campaign(campaign=campaign_three)
+        self.assertEqual(queued_after_reimport, 1)
+        self.assertEqual(
+            EmailQueueItem.objects.get(campaign=campaign_three).status,
+            EmailQueueItem.Status.PENDING,
+        )
+
     def test_send_requires_content(self):
         empty = Campaign.objects.create(
             owner=self.user,

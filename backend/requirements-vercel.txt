@@ -1,13 +1,10 @@
-# Vercel / serverless — no mysqlclient (needs system libs).
-# Use Neon or Vercel Postgres via DATABASE_URL.
+# Vercel / serverless — Django SQLite (db.sqlite3).
 
 Django>=5.1,<5.2
 djangorestframework>=3.15,<4.0
 djangorestframework-simplejwt>=5.3,<6.0
 django-cors-headers>=4.4,<5.0
 django-environ>=0.11,<1.0
-
-psycopg[binary]>=3.1,<4.0
 
 celery>=5.4,<6.0
 redis>=5.0,<6.0

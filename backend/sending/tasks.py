@@ -3,6 +3,7 @@ from celery import shared_task
 from sending.queue_control import (
     bump_queue_run_generation,
     current_queue_run_generation,
+    pop_resume_delay_seconds,
 )
 
 
@@ -15,6 +16,7 @@ def _schedule_next_queue_run_if_pending(*, delay_seconds: int | None = None):
         MIN_SEND_INTERVAL_SECONDS,
         compute_send_interval_seconds,
         get_next_pending_queue_item,
+        get_next_send_in_seconds,
         has_pending_queue_items,
     )
 
@@ -24,11 +26,22 @@ def _schedule_next_queue_run_if_pending(*, delay_seconds: int | None = None):
     if delay_seconds is None:
         item = get_next_pending_queue_item()
         if item and item.smtp_server_id:
-            delay_seconds = compute_send_interval_seconds(item.smtp_server)
+            remaining = get_next_send_in_seconds(smtp_server=item.smtp_server)
+            if remaining > 0:
+                delay_seconds = remaining
+            else:
+                delay_seconds = compute_send_interval_seconds(item.smtp_server)
         else:
             delay_seconds = MIN_SEND_INTERVAL_SECONDS
 
-    delay = max(MIN_SEND_INTERVAL_SECONDS, int(delay_seconds))
+    delay = max(0, int(delay_seconds))
+    if delay == 0:
+        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+            run_pending_email_queue_task()
+        else:
+            run_pending_email_queue_task.delay()
+        return
+
     generation = current_queue_run_generation()
 
     if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
@@ -92,10 +105,17 @@ def dispatch_campaign(self, campaign_id: str):
         set_tracking_base_url,
     )
     from tracking.resolve import resolve_tracking_base_url
+    from tracking.services import is_local_tracking_url, resolve_send_tracking_base_url
 
     tracking_base = get_campaign_tracking_base_url(str(campaign.id))
-    if not tracking_base:
-        tracking_base = resolve_tracking_base_url()
+    if not tracking_base or is_local_tracking_url(tracking_base):
+        tracking_base = (
+            resolve_send_tracking_base_url(
+                campaign_id=str(campaign.id),
+                from_email=getattr(campaign, "from_email", "") or "",
+            )
+            or resolve_tracking_base_url()
+        )
         set_campaign_tracking_base_url(str(campaign.id), tracking_base)
     set_tracking_base_url(tracking_base)
 
@@ -117,20 +137,37 @@ def dispatch_campaign(self, campaign_id: str):
         campaign.save(update_fields=["status", "updated_at"])
         requeued = 0
     elif campaign.status == Campaign.Status.SENDING:
-        from sending.services import requeue_campaign_items
-
-        requeued = requeue_campaign_items(campaign=campaign)
+        # Already sending — do not requeue/reset; just continue the pending cycle.
+        bump_queue_run_generation()
+        requeued = 0
     else:
         queue_campaign(campaign=campaign)
         requeued = 0
 
     item_ids = get_pending_queue_item_ids(campaign.id)
+    resume_delay = pop_resume_delay_seconds(campaign_id=campaign_id)
 
     if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
-        result = run_pending_email_queue()
+        if resume_delay is not None and resume_delay > 0:
+            result = {"processed": 0}
+        else:
+            result = run_pending_email_queue()
         campaign.refresh_from_db()
         finalize_campaign_if_complete(campaign=campaign)
-        _schedule_next_queue_run_if_pending()
+        if resume_delay is not None:
+            _schedule_next_queue_run_if_pending(delay_seconds=resume_delay)
+        elif result.get("processed", 0) > 0:
+            from sending.services import compute_send_interval_seconds, get_next_pending_queue_item
+
+            item = get_next_pending_queue_item()
+            delay = (
+                compute_send_interval_seconds(item.smtp_server)
+                if item and item.smtp_server_id
+                else None
+            )
+            _schedule_next_queue_run_if_pending(delay_seconds=delay)
+        else:
+            _schedule_next_queue_run_if_pending()
         return {
             "ok": True,
             "queued": len(item_ids),
@@ -139,8 +176,11 @@ def dispatch_campaign(self, campaign_id: str):
             "campaign_id": campaign_id,
         }
 
-    run_pending_email_queue_task.delay()
-    _schedule_next_queue_run_if_pending()
+    if resume_delay is not None and resume_delay > 0:
+        _schedule_next_queue_run_if_pending(delay_seconds=resume_delay)
+    else:
+        run_pending_email_queue_task.delay()
+        _schedule_next_queue_run_if_pending()
     return {
         "ok": True,
         "queued": len(item_ids),
@@ -162,7 +202,21 @@ def run_pending_email_queue_task():
     try:
         result = run_pending_email_queue()
         if has_pending_queue_items():
-            _schedule_next_queue_run_if_pending()
+            if result.get("processed", 0) > 0:
+                from sending.services import (
+                    compute_send_interval_seconds,
+                    get_next_pending_queue_item,
+                )
+
+                item = get_next_pending_queue_item()
+                delay = (
+                    compute_send_interval_seconds(item.smtp_server)
+                    if item and item.smtp_server_id
+                    else None
+                )
+                _schedule_next_queue_run_if_pending(delay_seconds=delay)
+            else:
+                _schedule_next_queue_run_if_pending()
         return result
     finally:
         close_old_connections()

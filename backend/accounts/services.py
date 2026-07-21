@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import User, UserRole, UserToken
-from accounts.tasks import send_password_reset_email, send_verification_email
+from accounts.tasks import send_password_reset_email
 
 
 def _hash_token(raw_token: str) -> str:
@@ -80,30 +80,14 @@ def register_user(*, email, password, **extra_fields):
         password=password,
         username=username,
         role=UserRole.CLIENT,
+        is_verified=True,
         **extra_fields,
     )
-
-    raw_token, _ = _create_user_token(
-        user,
-        UserToken.TokenType.EMAIL_VERIFICATION,
-        lifetime_hours=settings.EMAIL_VERIFICATION_TOKEN_HOURS,
-    )
-    # Email is sent after the DB commit (see register_user_and_notify).
-    return user, raw_token
+    return user
 
 
 def register_user_and_notify(*, email, password, **extra_fields):
-    user, raw_token = register_user(email=email, password=password, **extra_fields)
-    try:
-        send_verification_email.delay(str(user.id), raw_token)
-    except Exception:
-        # Signup must succeed even if SMTP/Celery fails (e.g. on Vercel).
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "Failed to queue verification email for user_id=%s", user.id
-        )
-    return user
+    return register_user(email=email, password=password, **extra_fields)
 
 
 def authenticate_user(*, email, password):
@@ -181,29 +165,9 @@ def verify_email(*, token):
 
 
 def resend_verification_email(*, user):
-    if user.is_verified:
-        raise ValidationError({"detail": ["Email is already verified."]})
-
-    raw_token, _ = _create_user_token(
-        user,
-        UserToken.TokenType.EMAIL_VERIFICATION,
-        lifetime_hours=settings.EMAIL_VERIFICATION_TOKEN_HOURS,
-    )
-    # Send synchronously so the API can report real SMTP errors to the UI.
-    from accounts.tasks import deliver_verification_email
-
-    try:
-        deliver_verification_email(str(user.id), raw_token)
-    except Exception as exc:
-        raise ValidationError(
-            {
-                "detail": [
-                    f"Could not send verification email: {exc}. "
-                    "Check Vercel EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD "
-                    "(Gmail App Password) and DEFAULT_FROM_EMAIL."
-                ]
-            }
-        ) from exc
+    if not user.is_verified:
+        user.is_verified = True
+        user.save(update_fields=["is_verified", "updated_at"])
 
 
 @transaction.atomic

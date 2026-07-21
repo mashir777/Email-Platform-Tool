@@ -1,0 +1,16 @@
+# Place this file ON THE SERVER at:
+#   public_html/.htaccess
+# (cPanel File Manager for datrixworld.com — NOT in this Cursor project)
+#
+# Goal: let /t/ (tracking PHP) be served by LiteSpeed/PHP, and do NOT send
+# those URLs into the Django/Passenger app (which currently returns 404).
+
+# If an existing .htaccess already has PassengerAppRoot / PassengerEnabled,
+# keep those lines and ONLY add the RewriteRule block below near the top.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Tracking pixel folder — serve real files, skip Django
+    RewriteRule ^t(/|$) - [L]
+</IfModule>

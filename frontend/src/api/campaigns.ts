@@ -75,6 +75,7 @@ export async function pauseCampaign(id: string): Promise<{ campaign: Campaign }>
 
 export async function sendCampaign(
   id: string,
+  options?: { resume_delay_seconds?: number },
 ): Promise<{
   campaign: Campaign;
   send_summary?: {
@@ -88,9 +89,19 @@ export async function sendCampaign(
     errors?: { email: string; error: string }[];
   };
 }> {
+  const trackingBase = getTrackingBaseUrl();
+  const headers: Record<string, string> = {};
+  if (trackingBase && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(trackingBase)) {
+    headers["X-Tracking-Base-Url"] = trackingBase;
+  }
+  const body =
+    options?.resume_delay_seconds != null
+      ? JSON.stringify({ resume_delay_seconds: options.resume_delay_seconds })
+      : undefined;
   return apiV1Request(`/campaigns/${id}/send/`, {
     method: "POST",
-    headers: { "X-Tracking-Base-Url": getTrackingBaseUrl() },
+    headers,
+    body,
   });
 }
 

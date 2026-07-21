@@ -146,7 +146,11 @@ class SubscriberSerializer(serializers.ModelSerializer):
         owner = self.context.get("owner") or getattr(obj, "owner", None)
         if owner is None:
             return "waiting"
-        return "sent" if subscriber_was_sent(owner=owner, subscriber_id=obj.id) else "waiting"
+        return "sent" if subscriber_was_sent(
+            owner=owner,
+            subscriber_id=obj.id,
+            subscriber_list=self.context.get("subscriber_list"),
+        ) else "waiting"
 
 
 class SubscriberCreateSerializer(serializers.Serializer):

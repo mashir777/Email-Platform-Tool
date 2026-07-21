@@ -98,11 +98,42 @@ function formatSendResult(result: {
 }
 
 const SEND_DELAY_STORAGE_KEY = "campaign_send_delay_seconds";
+const STOPPED_AT_STORAGE_KEY = "campaign_send_stopped_at";
 
 function loadSendDelaySeconds(): number {
   const raw = Number(localStorage.getItem(SEND_DELAY_STORAGE_KEY) || "60");
   if (!Number.isFinite(raw)) return 60;
   return Math.min(900, Math.max(60, Math.round(raw)));
+}
+
+function loadStoppedAt(campaignId: string): number | null {
+  try {
+    const raw = sessionStorage.getItem(`${STOPPED_AT_STORAGE_KEY}:${campaignId}`);
+    if (raw == null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoppedAt(campaignId: string, seconds: number) {
+  try {
+    sessionStorage.setItem(
+      `${STOPPED_AT_STORAGE_KEY}:${campaignId}`,
+      String(Math.max(0, Math.round(seconds))),
+    );
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+function clearStoppedAt(campaignId: string) {
+  try {
+    sessionStorage.removeItem(`${STOPPED_AT_STORAGE_KEY}:${campaignId}`);
+  } catch {
+    // ignore
+  }
 }
 
 export function CampaignsPage() {
@@ -144,6 +175,17 @@ export function CampaignsPage() {
   const stoppedAtSecondsRef = useRef<{ campaignId: string; nextInSeconds: number } | null>(
     null,
   );
+  const pollSendProgressRef = useRef<(() => void) | null>(null);
+  const lastSentCountRef = useRef<Record<string, number>>({});
+  const sendProgressRef = useRef(sendProgress);
+  useEffect(() => {
+    sendProgressRef.current = sendProgress;
+  }, [sendProgress]);
+
+  const activeSendingId =
+    campaigns.find((campaign) => campaign.status === "sending")?.id ?? null;
+  const pausedCampaignId =
+    campaigns.find((campaign) => campaign.status === "paused")?.id ?? null;
 
   const selectedList = lists.find((l) => l.id === form.subscriber_list_id);
   const recipientCount = selectedList?.subscriber_count ?? 0;
@@ -190,8 +232,9 @@ export function CampaignsPage() {
     }
   }, []);
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
+  const loadData = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) setIsLoading(true);
     setError("");
     try {
       const [statsRes, campaignsRes, listsRes, messagesRes] = await Promise.all([
@@ -205,9 +248,11 @@ export function CampaignsPage() {
       setLists(listsRes.lists);
       setMessagePurposes(messagesRes.purposes);
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : "Failed to load campaigns");
+      if (!silent) {
+        setError(err instanceof ApiClientError ? err.message : "Failed to load campaigns");
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   }, [search]);
 
@@ -244,49 +289,90 @@ export function CampaignsPage() {
   }, [trackingId, loadTracking]);
 
   useEffect(() => {
-    const sendingCampaign = campaigns.find((campaign) => campaign.status === "sending");
-    if (!sendingCampaign) {
-      setSendProgress((current) =>
-        current && campaigns.some((c) => c.id === current.campaignId && c.status === "sending")
-          ? current
-          : null,
-      );
+    if (!activeSendingId) {
+      setSendProgress((current) => {
+        if (!current) return null;
+        const campaign = campaigns.find((c) => c.id === current.campaignId);
+        // Keep frozen timer while paused so Stop → Resume can repeat anytime.
+        if (campaign?.status === "paused" && current.pending > 0) return current;
+        return null;
+      });
       return;
     }
 
+    const sendingName =
+      campaigns.find((c) => c.id === activeSendingId)?.name || "Campaign";
+
+    // Show timer immediately while the first poll loads queue stats.
+    setSendProgress((current) => {
+      if (current?.campaignId === activeSendingId) return current;
+      const stored = loadStoppedAt(activeSendingId);
+      const resumeSeconds =
+        stoppedAtSecondsRef.current?.campaignId === activeSendingId
+          ? stoppedAtSecondsRef.current.nextInSeconds
+          : stored != null
+            ? stored
+            : sendDelaySeconds;
+      if (stored != null) {
+        stoppedAtSecondsRef.current = {
+          campaignId: activeSendingId,
+          nextInSeconds: stored,
+        };
+      }
+      return {
+        campaignId: activeSendingId,
+        campaignName: sendingName,
+        sent: 0,
+        pending: 1,
+        intervalSeconds: sendDelaySeconds,
+        nextInSeconds: resumeSeconds,
+      };
+    });
+
     const poll = () => {
-      void loadData();
+      void loadData({ silent: true });
       void campaignsApi
-        .fetchCampaignDeliveryStatus(sendingCampaign.id)
+        .fetchCampaignDeliveryStatus(activeSendingId)
         .then((result) => {
           applySendSummaryToProgress(
-            sendingCampaign.id,
-            sendingCampaign.name,
+            activeSendingId,
+            sendingName,
             result.send_summary,
           );
         })
         .catch(() => undefined);
     };
 
+    pollSendProgressRef.current = poll;
     poll();
-    const intervalId = window.setInterval(poll, 5000);
-    return () => window.clearInterval(intervalId);
-  }, [campaigns, loadData]);
+    const intervalId = window.setInterval(poll, 2000);
+    return () => {
+      pollSendProgressRef.current = null;
+      window.clearInterval(intervalId);
+    };
+    // Intentionally omit `campaigns` — polling must not restart the timer every 2s.
+  }, [activeSendingId, loadData, sendDelaySeconds]);
 
-  // Local countdown (e.g. 60→59→58→0) then restart until queue is empty
+  // Local countdown (e.g. 60→59→58→0); restarts when the next email is sent.
   useEffect(() => {
     if (!sendProgress || sendProgress.pending <= 0) return;
+    if (pausedCampaignId === sendProgress.campaignId) return;
     const tick = window.setInterval(() => {
       setSendProgress((current) => {
         if (!current || current.pending <= 0) return current;
         if (current.nextInSeconds <= 0) {
-          return { ...current, nextInSeconds: current.intervalSeconds };
+          pollSendProgressRef.current?.();
+          return current;
         }
-        return { ...current, nextInSeconds: current.nextInSeconds - 1 };
+        const nextInSeconds = current.nextInSeconds - 1;
+        if (nextInSeconds === 0) {
+          pollSendProgressRef.current?.();
+        }
+        return { ...current, nextInSeconds };
       });
     }, 1000);
     return () => window.clearInterval(tick);
-  }, [sendProgress?.campaignId, sendProgress?.pending]);
+  }, [sendProgress?.campaignId, sendProgress?.pending, pausedCampaignId]);
 
   useEffect(() => {
     void loadDefaultSmtp();
@@ -373,36 +459,41 @@ export function CampaignsPage() {
     const pending = summary.pending ?? 0;
     if (pending > 0) {
       const interval = summary.send_interval_seconds ?? sendDelaySeconds;
-      const serverNext = summary.next_send_in_seconds ?? interval;
       setSendProgress((current) => {
         const same = current?.campaignId === campaignId;
-        const emailJustSent = Boolean(same && pending < (current?.pending ?? 0));
+        const prevSent = lastSentCountRef.current[campaignId] ?? current?.sent ?? 0;
+        const emailJustSent = (summary.sent ?? 0) > prevSent;
+        lastSentCountRef.current[campaignId] = summary.sent ?? 0;
+
         const stoppedAt =
           stoppedAtSecondsRef.current?.campaignId === campaignId
             ? stoppedAtSecondsRef.current.nextInSeconds
             : null;
 
-        let nextIn = serverNext > 0 ? serverNext : interval;
+        const cycleSeconds = current?.intervalSeconds ?? interval;
+        let nextIn = cycleSeconds;
 
-        // After Stop → Resume: continue from the exact second where user stopped.
-        if (stoppedAt != null && !emailJustSent) {
+        if (emailJustSent) {
+          // Full campaign delay restarts right after each send.
+          nextIn = interval;
+          if (stoppedAtSecondsRef.current?.campaignId === campaignId) {
+            stoppedAtSecondsRef.current = null;
+          }
+          clearStoppedAt(campaignId);
+        } else if (stoppedAt != null) {
+          // Stop → Resume: keep counting from where the user stopped.
           if (same && (current?.nextInSeconds ?? 0) > 0) {
             nextIn = current!.nextInSeconds;
           } else {
             nextIn = stoppedAt;
           }
-        } else if (same && !emailJustSent && (current?.nextInSeconds ?? 0) > 0) {
-          // Keep smooth local countdown between polls unless an email just left
-          if (Math.abs((current?.nextInSeconds ?? 0) - serverNext) <= 5) {
-            nextIn = current!.nextInSeconds;
-          }
-        }
-
-        if (emailJustSent) {
-          nextIn = serverNext > 0 ? serverNext : interval;
-          if (stoppedAtSecondsRef.current?.campaignId === campaignId) {
-            stoppedAtSecondsRef.current = null;
-          }
+        } else if (same && (current?.nextInSeconds ?? 0) > 0) {
+          // Local 1s tick owns the countdown — ignore backend drift while ticking.
+          nextIn = current!.nextInSeconds;
+        } else if ((summary.next_send_in_seconds ?? 0) > 0) {
+          nextIn = summary.next_send_in_seconds!;
+        } else {
+          nextIn = interval;
         }
 
         return {
@@ -415,7 +506,14 @@ export function CampaignsPage() {
         };
       });
     } else {
-      setSendProgress((current) => (current?.campaignId === campaignId ? null : current));
+      // Queue empty — email(s) sent, hide the timer.
+      clearStoppedAt(campaignId);
+      if (stoppedAtSecondsRef.current?.campaignId === campaignId) {
+        stoppedAtSecondsRef.current = null;
+      }
+      setSendProgress((current) =>
+        current?.campaignId === campaignId ? null : current,
+      );
     }
   }
 
@@ -543,25 +641,30 @@ export function CampaignsPage() {
   }
 
   async function handleStopSending(id: string) {
+    const progress = sendProgressRef.current;
     const remaining =
-      sendProgress?.campaignId === id ? sendProgress.nextInSeconds : null;
+      progress?.campaignId === id ? Math.max(0, progress.nextInSeconds) : null;
     try {
       setError("");
       if (remaining != null) {
         stoppedAtSecondsRef.current = {
           campaignId: id,
-          nextInSeconds: Math.max(0, remaining),
+          nextInSeconds: remaining,
         };
+        saveStoppedAt(id, remaining);
       }
       await campaignsApi.pauseCampaign(id);
-      // Stop timer UI immediately even if a later loadData poll fails.
+      // Freeze timer at remaining seconds — do not clear sendProgress.
       setCampaigns((prev) =>
         prev.map((c) => (c.id === id ? { ...c, status: "paused" as const } : c)),
       );
-      setSendProgress(null);
+      setSendProgress((current) =>
+        current?.campaignId === id && remaining != null
+          ? { ...current, nextInSeconds: remaining }
+          : current,
+      );
       setNotice("Sending stopped. Use Resume Send to continue.");
-      await loadData();
-      // Successful stop — don't keep a refresh/poll 500 banner over the Stop result.
+      await loadData({ silent: true });
       setError("");
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Stop failed");
@@ -614,9 +717,23 @@ export function CampaignsPage() {
       setEditingId(null);
       setForm(emptyForm);
       setNotice(formatSendResult(result));
-      applySendSummaryToProgress(sentId, form.name || "Campaign", result.send_summary);
-      await loadData();
-      await openTracking(sentId);
+      clearStoppedAt(sentId);
+      stoppedAtSecondsRef.current = null;
+      const pending = result.send_summary?.pending ?? 0;
+      const interval =
+        result.send_summary?.send_interval_seconds ?? sendDelaySeconds;
+      if (pending > 0) {
+        setSendProgress({
+          campaignId: sentId,
+          campaignName: form.name || "Campaign",
+          sent: result.send_summary?.sent ?? 0,
+          pending,
+          intervalSeconds: interval,
+          nextInSeconds: interval,
+        });
+        lastSentCountRef.current[sentId] = result.send_summary?.sent ?? 0;
+      }
+      await loadData({ silent: true });
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Send failed");
     } finally {
@@ -671,20 +788,56 @@ export function CampaignsPage() {
       return;
     }
     setIsSending(true);
+    const storedStopped = loadStoppedAt(id);
+    const resumeFromSeconds =
+      campaign.status === "paused"
+        ? stoppedAtSecondsRef.current?.campaignId === id
+          ? stoppedAtSecondsRef.current.nextInSeconds
+          : sendProgress?.campaignId === id
+            ? sendProgress.nextInSeconds
+            : storedStopped
+        : null;
+    if (resumeFromSeconds != null) {
+      stoppedAtSecondsRef.current = {
+        campaignId: id,
+        nextInSeconds: resumeFromSeconds,
+      };
+      saveStoppedAt(id, resumeFromSeconds);
+    }
     try {
       await applySendDelaySeconds(sendDelaySeconds);
-      const result = await campaignsApi.sendCampaign(id);
+      const result = await campaignsApi.sendCampaign(
+        id,
+        resumeFromSeconds != null ? { resume_delay_seconds: resumeFromSeconds } : undefined,
+      );
       setShowForm(false);
       setEditingId(null);
       setForm(emptyForm);
       setNotice(formatSendResult(result));
-      applySendSummaryToProgress(
-        id,
-        campaign.name,
-        result.send_summary,
-      );
-      await loadData();
-      await openTracking(id);
+      // Show timer immediately after send/resume (before polls catch up).
+      const pending = result.send_summary?.pending ?? 0;
+      const interval =
+        result.send_summary?.send_interval_seconds ?? sendDelaySeconds;
+      if (pending > 0) {
+        setSendProgress({
+          campaignId: id,
+          campaignName: campaign.name,
+          sent: result.send_summary?.sent ?? 0,
+          pending,
+          intervalSeconds: interval,
+          nextInSeconds:
+            resumeFromSeconds != null ? resumeFromSeconds : interval,
+        });
+        lastSentCountRef.current[id] = result.send_summary?.sent ?? 0;
+      }
+      if (resumeFromSeconds != null) {
+        // Keep saved stop seconds until the next email actually sends.
+        stoppedAtSecondsRef.current = {
+          campaignId: id,
+          nextInSeconds: resumeFromSeconds,
+        };
+      }
+      await loadData({ silent: true });
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Send failed");
     } finally {
@@ -764,16 +917,25 @@ export function CampaignsPage() {
       setForm(emptyForm);
       setEditingId(null);
       setNotice(formatSendResult(result));
-      applySendSummaryToProgress(
-        created.campaign.id,
-        created.campaign.name,
-        result.send_summary,
-      );
+      const pending = result.send_summary?.pending ?? 0;
+      const interval =
+        result.send_summary?.send_interval_seconds ?? sendDelaySeconds;
+      if (pending > 0) {
+        setSendProgress({
+          campaignId: created.campaign.id,
+          campaignName: created.campaign.name,
+          sent: result.send_summary?.sent ?? 0,
+          pending,
+          intervalSeconds: interval,
+          nextInSeconds: interval,
+        });
+        lastSentCountRef.current[created.campaign.id] =
+          result.send_summary?.sent ?? 0;
+      }
       if (result.send_summary?.failed) {
         setError(formatSendResult(result));
       }
-      await loadData();
-      await openTracking(created.campaign.id);
+      await loadData({ silent: true });
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Send failed");
     } finally {
@@ -821,7 +983,7 @@ export function CampaignsPage() {
       {sendProgress && sendProgress.pending > 0 && (
         <div className="fixed right-4 top-24 z-40 w-56 rounded-xl border border-amber-500/40 bg-slate-950/95 p-4 shadow-xl shadow-black/40">
           <p className="text-xs font-medium uppercase tracking-wide text-amber-300">
-            Send timer
+            {pausedCampaignId === sendProgress.campaignId ? "Send timer (paused)" : "Send timer"}
           </p>
           <p className="mt-1 truncate text-sm text-slate-300">{sendProgress.campaignName}</p>
           <p className="mt-3 text-center text-5xl font-bold tabular-nums text-white">
@@ -839,9 +1001,10 @@ export function CampaignsPage() {
           <button
             type="button"
             onClick={() => handleStopSending(sendProgress.campaignId)}
-            className="mt-4 w-full rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500"
+            disabled={pausedCampaignId === sendProgress.campaignId}
+            className="mt-4 w-full rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Stop
+            {pausedCampaignId === sendProgress.campaignId ? "Stopped" : "Stop"}
           </button>
         </div>
       )}
@@ -1419,11 +1582,10 @@ export function CampaignsPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleSend(c.id)}
-                              disabled={isSending}
-                              className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                              onClick={() => handleStopSending(c.id)}
+                              className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-500"
                             >
-                              Resume Send
+                              Stop
                             </button>
                           </>
                         )}

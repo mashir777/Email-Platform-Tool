@@ -11,7 +11,7 @@ function AuthLoading() {
 }
 
 export function ProtectedRoute() {
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
   const location = useLocation();
 
   if (isLoading) {
@@ -22,26 +22,18 @@ export function ProtectedRoute() {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
-  if (!user?.is_verified) {
-    return <Navigate to="/check-email" replace />;
-  }
-
   return <Outlet />;
 }
 
 export function PublicRoute() {
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
 
   if (isLoading) {
     return <AuthLoading />;
   }
 
-  if (isAuthenticated && user?.is_verified) {
+  if (isAuthenticated) {
     return <Navigate to="/dashboard" replace />;
-  }
-
-  if (isAuthenticated && !user?.is_verified) {
-    return <Navigate to="/check-email" replace />;
   }
 
   return <Outlet />;

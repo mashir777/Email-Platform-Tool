@@ -18,7 +18,7 @@ from sending.models import EmailQueueItem
 from smtp_servers.connection import connect_smtp_server
 from smtp_servers.imap_sent import save_message_to_sent_folder
 from smtp_servers.models import SmtpServer
-from subscribers.models import Subscriber
+from subscribers.models import ListMembership, Subscriber
 from subscribers.validators import is_undeliverable_email
 from tracking.models import TrackingEvent
 from tracking.services import append_text_tracking_link, get_tracking_base_url, inject_open_tracking_pixel
@@ -26,6 +26,67 @@ from tracking.services import append_text_tracking_link, get_tracking_base_url, 
 logger = logging.getLogger(__name__)
 
 MIN_SEND_INTERVAL_SECONDS = 60
+
+
+def _list_membership_added_at_by_subscriber(*, subscriber_list) -> dict:
+    return {
+        row["subscriber_id"]: row["added_at"]
+        for row in ListMembership.objects.filter(list=subscriber_list).values(
+            "subscriber_id",
+            "added_at",
+        )
+    }
+
+
+def _subscribers_sent_since_list_import(
+    *,
+    owner,
+    subscriber_list,
+    subscriber_ids,
+    membership_added_at: dict | None = None,
+) -> set:
+    """Subscriber IDs already mailed after they were last imported into this list."""
+    if membership_added_at is None:
+        membership_added_at = _list_membership_added_at_by_subscriber(
+            subscriber_list=subscriber_list,
+        )
+
+    blocked = set()
+    if not subscriber_ids:
+        return blocked
+
+    for row in EmailQueueItem.objects.filter(
+        owner=owner,
+        status=EmailQueueItem.Status.SENT,
+        subscriber_id__in=subscriber_ids,
+        sent_at__isnull=False,
+    ).values("subscriber_id", "sent_at"):
+        sub_id = row["subscriber_id"]
+        added_at = membership_added_at.get(sub_id)
+        if added_at is None or row["sent_at"] >= added_at:
+            blocked.add(sub_id)
+    return blocked
+
+
+def _should_requeue_after_csv_reimport(*, queue_item, membership_added_at: dict) -> bool:
+    added_at = membership_added_at.get(queue_item.subscriber_id)
+    if not added_at:
+        return False
+    if queue_item.status == EmailQueueItem.Status.SENT:
+        return not queue_item.sent_at or queue_item.sent_at < added_at
+    if queue_item.status == EmailQueueItem.Status.SKIPPED:
+        return "Already sent previously" in (queue_item.last_error or "")
+    return False
+
+
+def _requeue_item_for_resend(*, queue_item, assigned_server) -> None:
+    queue_item.status = EmailQueueItem.Status.PENDING
+    queue_item.last_error = ""
+    queue_item.sent_at = None
+    queue_item.smtp_server = assigned_server
+    queue_item.save(
+        update_fields=["status", "last_error", "sent_at", "smtp_server", "updated_at"],
+    )
 
 
 def compute_send_interval_seconds(smtp_server: SmtpServer) -> int:
@@ -261,7 +322,8 @@ def send_message_via_smtp(
     message["Date"] = formatdate(localtime=True)
     message["Message-ID"] = make_msgid(domain=sender_email.split("@")[-1] if "@" in sender_email else None)
     message["Reply-To"] = sender_email
-    message["MIME-Version"] = "1.0"
+    # MIMEMultipart already sets MIME-Version; setting it again makes a duplicate
+    # header that AWS SES rejects with 554 "Duplicate header 'MIME-Version'".
 
     body_text = text_content or "This email requires an HTML-capable client."
     message.attach(MIMEText(body_text, "plain", "utf-8"))
@@ -411,12 +473,15 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             },
         )
 
-    already_sent_ids = set(
-        EmailQueueItem.objects.filter(
-            owner=campaign.owner,
-            status=EmailQueueItem.Status.SENT,
-            subscriber_id__in=recipients.values_list("id", flat=True),
-        ).values_list("subscriber_id", flat=True),
+    recipient_ids = list(recipients.values_list("id", flat=True))
+    membership_added_at = _list_membership_added_at_by_subscriber(
+        subscriber_list=campaign.subscriber_list,
+    )
+    already_sent_ids = _subscribers_sent_since_list_import(
+        owner=campaign.owner,
+        subscriber_list=campaign.subscriber_list,
+        subscriber_ids=recipient_ids,
+        membership_added_at=membership_added_at,
     )
 
     campaign.status = Campaign.Status.SENDING
@@ -459,13 +524,21 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             EmailQueueItem.Status.FAILED,
             EmailQueueItem.Status.SKIPPED,
         }:
-            # Do not requeue globally-sent addresses; only retry failed/skipped for unsent.
             if subscriber.id in already_sent_ids:
                 continue
             item.status = EmailQueueItem.Status.PENDING
             item.last_error = ""
             updates.extend(["status", "last_error"])
-        if item.status == EmailQueueItem.Status.SENT:
+        elif item.status == EmailQueueItem.Status.SENT:
+            if _should_requeue_after_csv_reimport(
+                queue_item=item,
+                membership_added_at=membership_added_at,
+            ):
+                item.status = EmailQueueItem.Status.PENDING
+                item.last_error = ""
+                item.sent_at = None
+                updates.extend(["status", "last_error", "sent_at"])
+                queued += 1
             continue
         if item.smtp_server_id != assigned_server.id:
             item.smtp_server = assigned_server
@@ -547,18 +620,35 @@ def extend_campaign_for_send(*, campaign: Campaign) -> int:
     recipients = campaign.subscriber_list.subscribers.filter(
         status=Subscriber.Status.SUBSCRIBED,
     )
+    recipient_ids = list(recipients.values_list("id", flat=True))
+    membership_added_at = _list_membership_added_at_by_subscriber(
+        subscriber_list=campaign.subscriber_list,
+    )
     existing_subscriber_ids = set(
         campaign.queue_items.values_list("subscriber_id", flat=True),
     )
-    already_sent_ids = set(
-        EmailQueueItem.objects.filter(
-            owner=campaign.owner,
-            status=EmailQueueItem.Status.SENT,
-            subscriber_id__in=recipients.values_list("id", flat=True),
-        ).values_list("subscriber_id", flat=True),
+    already_sent_ids = _subscribers_sent_since_list_import(
+        owner=campaign.owner,
+        subscriber_list=campaign.subscriber_list,
+        subscriber_ids=recipient_ids,
+        membership_added_at=membership_added_at,
     )
 
     pending_added = 0
+    for index, item in enumerate(
+        campaign.queue_items.select_related("subscriber").order_by("created_at"),
+    ):
+        if not _should_requeue_after_csv_reimport(
+            queue_item=item,
+            membership_added_at=membership_added_at,
+        ):
+            continue
+        if item.subscriber_id in already_sent_ids:
+            continue
+        assigned_server = _pick_smtp_server(servers, index)
+        _requeue_item_for_resend(queue_item=item, assigned_server=assigned_server)
+        pending_added += 1
+
     for index, subscriber in enumerate(recipients.iterator()):
         if subscriber.id in existing_subscriber_ids:
             continue
@@ -698,6 +788,16 @@ def process_queue_item(*, queue_item: EmailQueueItem):
         from_email = _resolve_from_email(campaign, smtp_server)
         from_name = _resolve_from_name(campaign, smtp_server)
 
+        from tracking.context import set_campaign_tracking_base_url
+        from tracking.services import resolve_send_tracking_base_url
+
+        tracking_base_url = resolve_send_tracking_base_url(
+            campaign_id=campaign_id,
+            from_email=from_email,
+        ) or get_tracking_base_url(campaign_id)
+        if tracking_base_url:
+            set_campaign_tracking_base_url(campaign_id, tracking_base_url)
+
         html_content = inject_open_tracking_pixel(
             _format_html_message(html_content),
             str(queue_item.id),
@@ -709,8 +809,6 @@ def process_queue_item(*, queue_item: EmailQueueItem):
             str(queue_item.id),
             campaign_id=campaign_id,
         )
-
-        tracking_base_url = get_tracking_base_url(campaign_id)
 
         send_message_via_smtp(
             smtp_server=smtp_server,

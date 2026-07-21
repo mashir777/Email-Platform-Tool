@@ -143,12 +143,20 @@ class SubscriberCollectionView(APIView):
                 first_name__icontains=search,
             ) | qs.filter(last_name__icontains=search)
 
+        serializer_context = {"owner": request.user}
+        if list_id:
+            serializer_context["subscriber_list"] = get_object_or_404(
+                SubscriberList,
+                id=list_id,
+                owner=request.user,
+            )
+
         return success_response(
             data={
                 "subscribers": SubscriberSerializer(
                     qs.distinct(),
                     many=True,
-                    context={"owner": request.user},
+                    context=serializer_context,
                 ).data,
             },
         )

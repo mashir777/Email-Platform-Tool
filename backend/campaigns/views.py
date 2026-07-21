@@ -249,14 +249,29 @@ class CampaignSendView(APIView):
         self.check_object_permissions(request, campaign)
 
         from tracking.context import set_campaign_tracking_base_url, set_tracking_base_url
-        from tracking.resolve import resolve_tracking_base_url
+        from tracking.services import resolve_send_tracking_base_url
 
-        tracking_base = resolve_tracking_base_url(
-            request=request,
+        tracking_base = resolve_send_tracking_base_url(
+            campaign_id=str(campaign.id),
+            from_email=campaign.from_email or "",
             header_value=request.headers.get("X-Tracking-Base-Url", ""),
         )
         set_tracking_base_url(tracking_base)
         set_campaign_tracking_base_url(str(campaign.id), tracking_base)
+        resume_delay_seconds = request.data.get("resume_delay_seconds")
+        if resume_delay_seconds is not None:
+            from sending.queue_control import set_resume_delay_seconds
+
+            try:
+                set_resume_delay_seconds(
+                    campaign_id=str(campaign.id),
+                    seconds=int(resume_delay_seconds),
+                )
+            except (TypeError, ValueError):
+                return error_response(
+                    {"resume_delay_seconds": ["Must be a non-negative integer."]},
+                    status.HTTP_400_BAD_REQUEST,
+                )
         try:
             campaign = services.send_campaign_now(campaign=campaign)
         except ValidationError as exc:
@@ -347,10 +362,16 @@ class CampaignDeliveryStatusView(APIView):
     @extend_schema(tags=["Campaigns"], summary="Per-recipient delivery and open tracking")
     def get(self, request, campaign_id):
         from sending.services import get_campaign_send_summary
-        from tracking.services import get_campaign_delivery_tracking
+        from tracking.services import get_campaign_delivery_tracking, sync_remote_opens
 
         campaign = get_object_or_404(Campaign, id=campaign_id, owner=request.user)
         self.check_object_permissions(request, campaign)
+
+        # Pull opens recorded by the same-domain proxy (no tunnel) before reporting.
+        try:
+            sync_remote_opens(campaign=campaign)
+        except Exception:  # noqa: BLE001 — tracking sync must never break the report
+            pass
 
         return success_response(
             data={

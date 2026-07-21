@@ -59,4 +59,4 @@ class PermissionClassesTestCase(TestCase):
     def test_is_email_verified_permission(self):
         permission = IsEmailVerified()
         self.assertTrue(permission.has_permission(self._request_for(self.admin), None))
-        self.assertFalse(permission.has_permission(self._request_for(self.client_user), None))
+        self.assertTrue(permission.has_permission(self._request_for(self.client_user), None))

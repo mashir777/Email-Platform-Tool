@@ -6,7 +6,6 @@ import re
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from subscribers.models import ListMembership, Subscriber, SubscriberList
@@ -45,25 +44,51 @@ def _list_name_from_filename(filename: str) -> str:
     return stem[:255]
 
 
-def _sent_exists_subquery(owner):
+def _subscribers_sent_since_list_import(
+    *,
+    owner,
+    subscriber_list,
+    subscriber_ids,
+) -> set:
+    """Subscriber IDs mailed after they were last imported into this list."""
     from sending.models import EmailQueueItem
 
-    return Exists(
-        EmailQueueItem.objects.filter(
-            owner=owner,
-            subscriber_id=OuterRef("pk"),
-            status=EmailQueueItem.Status.SENT,
-        ),
-    )
+    membership_added_at = {
+        row["subscriber_id"]: row["added_at"]
+        for row in ListMembership.objects.filter(
+            list=subscriber_list,
+            subscriber_id__in=subscriber_ids,
+        ).values("subscriber_id", "added_at")
+    }
+
+    blocked = set()
+    if not subscriber_ids:
+        return blocked
+
+    for row in EmailQueueItem.objects.filter(
+        owner=owner,
+        status=EmailQueueItem.Status.SENT,
+        subscriber_id__in=subscriber_ids,
+        sent_at__isnull=False,
+    ).values("subscriber_id", "sent_at"):
+        sub_id = row["subscriber_id"]
+        added_at = membership_added_at.get(sub_id)
+        if added_at is None or row["sent_at"] >= added_at:
+            blocked.add(sub_id)
+    return blocked
 
 
 def get_list_send_counts(*, subscriber_list, owner) -> dict:
-    total = subscriber_list.subscribers.count()
-    sent = (
-        subscriber_list.subscribers.filter(owner=owner)
-        .annotate(_was_sent=_sent_exists_subquery(owner))
-        .filter(_was_sent=True)
-        .count()
+    subscriber_ids = list(
+        subscriber_list.subscribers.filter(owner=owner).values_list("id", flat=True),
+    )
+    total = len(subscriber_ids)
+    sent = len(
+        _subscribers_sent_since_list_import(
+            owner=owner,
+            subscriber_list=subscriber_list,
+            subscriber_ids=subscriber_ids,
+        ),
     )
     waiting = max(total - sent, 0)
     return {
@@ -73,14 +98,21 @@ def get_list_send_counts(*, subscriber_list, owner) -> dict:
     }
 
 
-def subscriber_was_sent(*, owner, subscriber_id) -> bool:
+def subscriber_was_sent(*, owner, subscriber_id, subscriber_list=None) -> bool:
     from sending.models import EmailQueueItem
 
-    return EmailQueueItem.objects.filter(
+    if subscriber_list is None:
+        return EmailQueueItem.objects.filter(
+            owner=owner,
+            subscriber_id=subscriber_id,
+            status=EmailQueueItem.Status.SENT,
+        ).exists()
+
+    return subscriber_id in _subscribers_sent_since_list_import(
         owner=owner,
-        subscriber_id=subscriber_id,
-        status=EmailQueueItem.Status.SENT,
-    ).exists()
+        subscriber_list=subscriber_list,
+        subscriber_ids=[subscriber_id],
+    )
 
 
 def get_owner_lists(user):
@@ -244,17 +276,26 @@ def _get_or_create_list_by_name(*, owner, name: str, source_filename: str = ""):
     return subscriber_list, created
 
 
-def _assign_subscriber_to_lists(*, subscriber, lists: list[SubscriberList]):
+def _assign_subscriber_to_lists(
+    *,
+    subscriber,
+    lists: list[SubscriberList],
+    refresh_import: bool = False,
+):
     seen: set[str] = set()
     for subscriber_list in lists:
         list_key = str(subscriber_list.id)
         if list_key in seen:
             continue
         seen.add(list_key)
-        ListMembership.objects.get_or_create(
+        membership, _ = ListMembership.objects.get_or_create(
             list=subscriber_list,
             subscriber=subscriber,
         )
+        if refresh_import:
+            ListMembership.objects.filter(pk=membership.pk).update(
+                added_at=timezone.now(),
+            )
 
 
 def _resolve_import_target_list(*, owner, list_id, source_filename: str, file_list_name: str):
@@ -406,7 +447,11 @@ def import_subscribers_from_csv(*, owner, csv_file, list_id=None):
             lists_to_assign.append(filename_list)
 
         if lists_to_assign:
-            _assign_subscriber_to_lists(subscriber=subscriber, lists=lists_to_assign)
+            _assign_subscriber_to_lists(
+                subscriber=subscriber,
+                lists=lists_to_assign,
+                refresh_import=True,
+            )
             for item in lists_to_assign:
                 touched_lists.add(str(item.id))
 

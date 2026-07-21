@@ -1,19 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import * as authApi from "@/api/auth";
 import { fetchCampaignStats } from "@/api/campaigns";
 import { fetchStats } from "@/api/subscribers";
-import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { getAuthErrorMessage, useAuth } from "@/context/AuthContext";
+import { useAuth } from "@/context/AuthContext";
 
 export function DashboardPage() {
-  const { user, refreshUser } = useAuth();
+  const { user } = useAuth();
   const [subscriberTotal, setSubscriberTotal] = useState<string>("—");
   const [campaignTotal, setCampaignTotal] = useState<string>("—");
-  const [isResending, setIsResending] = useState(false);
-  const [resendMessage, setResendMessage] = useState("");
 
   const greeting = user?.first_name ? `Welcome, ${user.first_name}` : "Welcome back";
 
@@ -25,20 +21,6 @@ export function DashboardPage() {
       .then((res) => setCampaignTotal(String(res.stats.total)))
       .catch(() => setCampaignTotal("—"));
   }, []);
-
-  async function handleResendVerification() {
-    setResendMessage("");
-    setIsResending(true);
-    try {
-      await authApi.resendVerificationEmail();
-      setResendMessage("Verification email sent. Check your inbox (or Django console in local dev).");
-      await refreshUser();
-    } catch (err) {
-      setResendMessage(getAuthErrorMessage(err));
-    } finally {
-      setIsResending(false);
-    }
-  }
 
   const stats = [
     { label: "Total Emails", value: subscriberTotal, hint: "Live from API" },
@@ -54,28 +36,6 @@ export function DashboardPage() {
         <p className="mt-1 text-sm text-slate-400">
           Your email marketing command center.
         </p>
-        {!user?.is_verified && (
-          <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            <p>
-              Your email is not verified yet. Some features may be restricted until
-              verification is complete.
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button
-                type="button"
-                variant="secondary"
-                className="!py-1.5 !text-xs"
-                isLoading={isResending}
-                onClick={handleResendVerification}
-              >
-                Resend verification email
-              </Button>
-              {resendMessage && (
-                <span className="text-xs text-amber-100/80">{resendMessage}</span>
-              )}
-            </div>
-          </div>
-        )}
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

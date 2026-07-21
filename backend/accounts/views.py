@@ -70,7 +70,7 @@ class RegisterView(APIView):
                 "user": UserSerializer(user, context={"request": request}).data,
                 "tokens": tokens,
             },
-            message="Registration successful. Please verify your email.",
+            message="Registration successful.",
             status_code=status.HTTP_201_CREATED,
         )
 
