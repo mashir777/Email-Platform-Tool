@@ -25,9 +25,9 @@ TRANSPARENT_GIF_BYTES = (
 
 
 def get_tracking_proxy_base_url() -> str:
-    """Same-domain PHP proxy base (e.g. https://datrixworld.com) when configured."""
+    """Same-domain PHP proxy base only when /t/ is actually reachable (not Django 404)."""
     base = (getattr(settings, "TRACKING_PROXY_BASE_URL", "") or "").strip().rstrip("/")
-    if base and not is_local_tracking_url(base):
+    if base and not is_local_tracking_url(base) and _same_domain_proxy_is_live(base):
         return base
     return ""
 

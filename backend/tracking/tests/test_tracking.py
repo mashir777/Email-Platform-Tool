@@ -140,14 +140,19 @@ class TrackingTestCase(TestCase):
         TRACKING_PROXY_SECRET="test-secret",
     )
     def test_same_domain_proxy_pixel_and_decode(self):
+        from unittest.mock import patch
         from tracking.services import _queue_item_id_from_tracking_path
 
-        html = inject_open_tracking_pixel(
-            self.campaign.html_content,
-            str(self.queue_item.id),
-            campaign_id=str(self.campaign.id),
-            from_email="info@datrixworld.com",
-        )
+        with patch(
+            "tracking.services._same_domain_proxy_is_live",
+            return_value=True,
+        ):
+            html = inject_open_tracking_pixel(
+                self.campaign.html_content,
+                str(self.queue_item.id),
+                campaign_id=str(self.campaign.id),
+                from_email="info@datrixworld.com",
+            )
         # Same-domain, tunnel-free pixel; links are left untouched.
         self.assertIn("https://datrixworld.com/t/open.php?path=", html)
         self.assertNotIn("/t/c/", html)
