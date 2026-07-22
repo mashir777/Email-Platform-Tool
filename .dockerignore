@@ -1,0 +1,44 @@
+# Git / VCS
+.git
+.gitignore
+
+# Python
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/htmlcov
+**/.coverage
+
+# Local DB / media / logs (use Docker volumes instead)
+**/db.sqlite3
+**/db.sqlite3-journal
+**/media
+**/staticfiles
+**/logs
+**/celerybeat-schedule
+**/celerybeat.pid
+
+# Env / secrets
+.env
+.env.*
+!.env.docker.example
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Frontend (built inside its own image)
+frontend/node_modules
+frontend/dist
+
+# Docs / misc
+*.md
+!README.md
+docs
+agent-transcripts

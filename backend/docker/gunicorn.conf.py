@@ -1,10 +1,10 @@
-"""Gunicorn configuration for email_platform production deployment."""
+"""Gunicorn config for Docker / EC2."""
 
 import multiprocessing
 import os
 
-bind = os.environ.get("GUNICORN_BIND", "127.0.0.1:8000")
-workers = int(os.environ.get("GUNICORN_WORKERS", multiprocessing.cpu_count() * 2 + 1))
+bind = os.environ.get("GUNICORN_BIND", "0.0.0.0:8000")
+workers = int(os.environ.get("GUNICORN_WORKERS", max(2, multiprocessing.cpu_count())))
 threads = int(os.environ.get("GUNICORN_THREADS", 2))
 worker_class = "gthread"
 timeout = int(os.environ.get("GUNICORN_TIMEOUT", 120))
@@ -18,11 +18,7 @@ loglevel = os.environ.get("GUNICORN_LOG_LEVEL", "info")
 capture_output = True
 
 proc_name = "email_platform"
-
 wsgi_app = "config.wsgi:application"
 
-raw_env = [
-    "DJANGO_SETTINGS_MODULE=config.settings.production",
-]
-
-forwarded_allow_ips = os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1")
+# Trust nginx / reverse-proxy container IPs for X-Forwarded-* headers
+forwarded_allow_ips = os.environ.get("FORWARDED_ALLOW_IPS", "*")

@@ -102,12 +102,17 @@ ASGI_APPLICATION = "config.asgi.application"
 
 AUTH_USER_MODEL = "accounts.User"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# Prefer DATABASE_URL (Postgres in Docker/production). Fall back to SQLite for local dev.
+_database_url = env("DATABASE_URL", default="")
+if _database_url:
+    DATABASES = {"default": env.db("DATABASE_URL")}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": env("SQLITE_PATH", default=str(BASE_DIR / "db.sqlite3")),
+        }
     }
-}
 
 AUTH_PASSWORD_VALIDATORS = [
     {

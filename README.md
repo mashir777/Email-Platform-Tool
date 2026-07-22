@@ -94,6 +94,31 @@ npm install
 npm run dev
 ```
 
+## Docker deploy (AWS EC2)
+
+Runs Postgres, Redis, Django (Gunicorn), Celery worker + beat, and the React SPA behind nginx on port 80.
+
+```bash
+# On the EC2 instance (Ubuntu), install Docker first if needed:
+#   curl -fsSL https://get.docker.com | sudo sh
+#   sudo usermod -aG docker $USER   # then re-login
+
+cd /path/to/Email-Platform-Tool
+cp .env.docker.example .env
+nano .env   # set DJANGO_SECRET_KEY, POSTGRES_PASSWORD, domain/IP, SMTP
+
+chmod +x scripts/docker-*.sh
+./scripts/docker-up.sh              # build + start
+# ./scripts/docker-up.sh --profile reacher   # also start Reacher verifier
+
+./scripts/docker-logs.sh            # follow logs
+./scripts/docker-down.sh            # stop (keeps DB/media volumes)
+
+docker compose exec backend python manage.py createsuperuser
+```
+
+Open security group port **80** (and **443** later for HTTPS). After code changes on the server: `./scripts/docker-up.sh` again to rebuild and restart.
+
 ## Deploy Frontend + Django API to Vercel
 
 Signup/login HTTP API can run on Vercel. Campaign queues (Celery workers) still need a real VPS later.
