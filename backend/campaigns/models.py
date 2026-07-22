@@ -26,6 +26,21 @@ class Campaign(models.Model):
     subject = models.CharField(max_length=255)
     from_name = models.CharField(max_length=255, blank=True)
     from_email = models.EmailField(blank=True)
+    # Selected SMTP sender IDs for this campaign (round-robin). Empty = all active.
+    smtp_server_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=_("SMTP server UUIDs to send from. Empty uses all active senders."),
+    )
+    # How many emails one sender sends before rotating. Null = unlimited (first sender only).
+    emails_per_sender = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        default=1,
+        help_text=_(
+            "Emails per sender before switching to the next. Null = unlimited (first sender only).",
+        ),
+    )
     html_content = models.TextField(blank=True)
     text_content = models.TextField(blank=True)
     status = models.CharField(

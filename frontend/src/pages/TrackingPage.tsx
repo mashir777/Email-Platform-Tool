@@ -8,9 +8,9 @@ import { Card } from "@/components/ui/Card";
 import type { Campaign } from "@/types/campaigns";
 
 function sendLabel(status: string): { text: string; className: string } {
-  if (status === "sent") return { text: "Sent", className: "text-emerald-400" };
-  if (status === "failed") return { text: "Fail", className: "text-red-400" };
-  if (status === "sending") return { text: "Sending…", className: "text-amber-300" };
+  if (status === "sent") return { text: "Sent", className: "text-emerald-600" };
+  if (status === "failed") return { text: "Fail", className: "text-red-600" };
+  if (status === "sending") return { text: "Sending…", className: "text-amber-700" };
   if (status === "skipped") return { text: "Skipped", className: "text-slate-500" };
   return { text: "Pending", className: "text-slate-400" };
 }
@@ -117,7 +117,7 @@ export function TrackingPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
@@ -139,9 +139,9 @@ export function TrackingPage() {
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
         <Card className="h-fit p-0 overflow-hidden">
-          <div className="border-b border-slate-800 px-4 py-3">
+          <div className="border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between gap-2">
-              <label className="flex items-center gap-2 text-sm font-semibold text-white">
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                 <input
                   type="checkbox"
                   aria-label="Select all tracking campaigns"
@@ -161,7 +161,7 @@ export function TrackingPage() {
                 <button
                   type="button"
                   onClick={() => void handleDeleteSelected()}
-                  className="text-xs text-red-400 hover:text-red-300"
+                  className="text-xs text-red-600 hover:text-red-700"
                 >
                   Delete Selected
                 </button>
@@ -175,7 +175,7 @@ export function TrackingPage() {
               No sent campaigns yet. Send a campaign first.
             </p>
           ) : (
-            <ul className="max-h-[70vh] overflow-auto divide-y divide-slate-800">
+            <ul className="max-h-[70vh] overflow-auto divide-y divide-slate-200">
               {campaigns.map((c) => (
                 <li key={c.id} className="flex items-center">
                   <input
@@ -196,8 +196,8 @@ export function TrackingPage() {
                     onClick={() => setSelectedId(c.id)}
                     className={`min-w-0 flex-1 px-3 py-3 text-left text-sm transition ${
                       selectedId === c.id
-                        ? "bg-indigo-600/15 text-indigo-200"
-                        : "text-slate-300 hover:bg-slate-900"
+                        ? "bg-indigo-50 text-indigo-800"
+                        : "text-slate-700 hover:bg-slate-100"
                     }`}
                   >
                     <span className="block truncate font-medium">{c.name}</span>
@@ -208,7 +208,7 @@ export function TrackingPage() {
                   <button
                     type="button"
                     onClick={() => void handleDeleteCampaign(c.id)}
-                    className="mr-4 text-xs text-red-400 hover:text-red-300"
+                    className="mr-4 text-xs text-red-600 hover:text-red-700"
                   >
                     Delete
                   </button>
@@ -226,7 +226,7 @@ export function TrackingPage() {
           ) : tracking ? (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-white">{tracking.campaign_name}</h3>
+                <h3 className="text-lg font-semibold text-slate-900">{tracking.campaign_name}</h3>
                 <p className="text-sm text-slate-400">
                   {tracking.opened}/{tracking.delivered} opened emails ({tracking.open_rate}%)
                 </p>
@@ -238,7 +238,7 @@ export function TrackingPage() {
               <div className="overflow-auto">
                 <table className="w-full text-left text-sm">
                   <thead>
-                    <tr className="border-b border-slate-800 text-slate-500">
+                    <tr className="border-b border-slate-200 text-slate-500">
                       <th className="pb-2 pr-3 font-medium">Email</th>
                       <th className="pb-2 pr-3 font-medium">Sent Emails</th>
                       <th className="pb-2 font-medium">Opened Emails</th>
@@ -248,14 +248,14 @@ export function TrackingPage() {
                     {tracking.recipients.map((row) => {
                       const send = sendLabel(row.queue_status);
                       return (
-                        <tr key={row.email} className="border-b border-slate-800/60">
-                          <td className="py-2.5 pr-3 text-slate-200">{row.email}</td>
+                        <tr key={row.email} className="border-b border-slate-200/60">
+                          <td className="py-2.5 pr-3 text-slate-800">{row.email}</td>
                           <td className={`py-2.5 pr-3 font-medium ${send.className}`}>
                             {send.text}
                           </td>
                           <td className="py-2.5">
                             {row.opened ? (
-                              <span className="text-emerald-400">Yes</span>
+                              <span className="text-emerald-600">Yes</span>
                             ) : row.delivered ? (
                               <span className="text-slate-400">No</span>
                             ) : (

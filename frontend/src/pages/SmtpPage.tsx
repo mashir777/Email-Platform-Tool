@@ -22,10 +22,15 @@ const emptyForm = {
   encryption: "tls" as SmtpEncryption,
   from_email: "",
   from_name: "",
+  reply_to_email: "",
   is_active: true,
   is_default: false,
   hourly_limit: "100",
   daily_limit: "1000",
+  warmup_enabled: false,
+  warmup_start_daily: "5",
+  warmup_target_daily: "40",
+  warmup_increase_daily: "5",
   verify_ssl: false,
   save_copy_to_sent: true,
   imap_host: "",
@@ -96,10 +101,15 @@ export function SmtpPage() {
       encryption: server.encryption,
       from_email: server.from_email,
       from_name: server.from_name,
+      reply_to_email: server.reply_to_email ?? "",
       is_active: server.is_active,
       is_default: server.is_default,
       hourly_limit: String(server.hourly_limit),
       daily_limit: String(server.daily_limit),
+      warmup_enabled: server.warmup_enabled ?? false,
+      warmup_start_daily: String(server.warmup_start_daily ?? 5),
+      warmup_target_daily: String(server.warmup_target_daily ?? 40),
+      warmup_increase_daily: String(server.warmup_increase_daily ?? 5),
       verify_ssl: server.verify_ssl,
       save_copy_to_sent: server.save_copy_to_sent ?? true,
       imap_host: server.imap_host ?? "",
@@ -121,10 +131,15 @@ export function SmtpPage() {
         encryption: form.encryption,
         from_email: form.from_email,
         from_name: form.from_name,
+        reply_to_email: form.reply_to_email.trim(),
         is_active: form.is_active,
         is_default: form.is_default,
         hourly_limit: Number(form.hourly_limit),
         daily_limit: Number(form.daily_limit),
+        warmup_enabled: form.warmup_enabled,
+        warmup_start_daily: Number(form.warmup_start_daily) || 5,
+        warmup_target_daily: Number(form.warmup_target_daily) || 40,
+        warmup_increase_daily: Number(form.warmup_increase_daily) || 5,
         verify_ssl: form.verify_ssl,
         save_copy_to_sent: form.save_copy_to_sent,
         imap_host: form.imap_host.trim(),
@@ -223,12 +238,12 @@ export function SmtpPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
       {notice && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700">
           {notice}
         </div>
       )}
@@ -241,24 +256,24 @@ export function SmtpPage() {
               servers.find((s) => s.is_active);
             if (!defaultServer) {
               return (
-                <p className="text-sm text-amber-300">No active SMTP server. Add one below.</p>
+                <p className="text-sm text-amber-700">No active SMTP server. Add one below.</p>
               );
             }
             return (
               <div className="space-y-2 text-sm">
-                <p className="text-slate-300">
+                <p className="text-slate-700">
                   Campaigns send <strong>from</strong> this domain mailbox:
                 </p>
-                <p className="font-mono text-lg text-emerald-400">{defaultServer.from_email}</p>
+                <p className="font-mono text-lg text-emerald-600">{defaultServer.from_email}</p>
                 <p className="text-xs text-slate-500">
                   Recipients can be Gmail (@gmail.com). Do not use Gmail as From email.
                   {defaultServer.save_copy_to_sent && (
-                    <span className="mt-1 block text-indigo-300">
+                    <span className="mt-1 block text-indigo-700">
                       Sent copies are saved to your Namecheap mailbox Sent folder via IMAP.
                     </span>
                   )}
                   {defaultServer.hourly_limit < 30 && (
-                    <span className="mt-1 block text-amber-400">
+                    <span className="mt-1 block text-amber-600">
                       Hourly limit is {defaultServer.hourly_limit} — increase to 60+ for faster
                       sending.
                     </span>
@@ -277,11 +292,11 @@ export function SmtpPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Card>
             <p className="text-sm text-slate-400">Total Servers</p>
-            <p className="mt-2 text-3xl font-bold text-white">{stats.total}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{stats.total}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Active</p>
-            <p className="mt-2 text-3xl font-bold text-emerald-400">{stats.active}</p>
+            <p className="mt-2 text-3xl font-bold text-emerald-600">{stats.active}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Inactive</p>
@@ -289,7 +304,7 @@ export function SmtpPage() {
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Default Set</p>
-            <p className="mt-2 text-3xl font-bold text-indigo-400">
+            <p className="mt-2 text-3xl font-bold text-indigo-600">
               {stats.default_configured ? "Yes" : "No"}
             </p>
           </Card>
@@ -303,7 +318,7 @@ export function SmtpPage() {
             placeholder="Search servers..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+            className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
           />
           <Button onClick={openCreate}>+ Add Server</Button>
           {selectedServerIds.length > 0 && (
@@ -312,7 +327,7 @@ export function SmtpPage() {
             </Button>
           )}
           <label className="cursor-pointer">
-            <span className="inline-flex items-center justify-center rounded-lg border border-slate-600 bg-slate-800 px-4 py-2.5 text-sm font-medium text-slate-100 hover:bg-slate-700">
+            <span className="inline-flex items-center justify-center rounded-lg border border-slate-600 bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-900 hover:bg-slate-700">
               {isImporting ? "Importing..." : "Import CSV (20 mailboxes)"}
             </span>
             <input
@@ -329,9 +344,9 @@ export function SmtpPage() {
           </label>
         </div>
 
-        <div className="mb-4 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-200">
+        <div className="mb-4 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-800">
           <p className="font-medium">Multi-domain setup (5 domains × 4 mailboxes = 20 sends)</p>
-          <p className="mt-1 text-xs text-indigo-300/90">
+          <p className="mt-1 text-xs text-indigo-700/90">
             Import CSV with columns: name, host, port, username, password, from_email.
             Set hourly_limit=60 for 1 email/minute per mailbox. Recipients can be Gmail
             addresses — but From must be your domain email, not @gmail.com.
@@ -342,9 +357,9 @@ export function SmtpPage() {
         {showForm && (
           <form
             onSubmit={handleSubmit}
-            className="mb-6 rounded-lg border border-slate-700 bg-slate-900/50 p-4"
+            className="mb-6 rounded-lg border border-slate-300 bg-slate-50 p-4"
           >
-            <h3 className="mb-4 text-sm font-semibold text-white">
+            <h3 className="mb-4 text-sm font-semibold text-slate-900">
               {editingId ? "Edit SMTP Server" : "New SMTP Server"}
             </h3>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -369,7 +384,7 @@ export function SmtpPage() {
                 onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
               />
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
                   Encryption
                 </label>
                 <select
@@ -380,7 +395,7 @@ export function SmtpPage() {
                       encryption: e.target.value as SmtpEncryption,
                     }))
                   }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
                 >
                   {encryptionOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>
@@ -419,6 +434,17 @@ export function SmtpPage() {
                 onChange={(e) => setForm((f) => ({ ...f, from_name: e.target.value }))}
               />
               <Input
+                label="Reply-To (optional override)"
+                type="email"
+                value={form.reply_to_email}
+                onChange={(e) => setForm((f) => ({ ...f, reply_to_email: e.target.value }))}
+                placeholder="Leave blank to use Settings → Shared Reply-To"
+              />
+              <p className="sm:col-span-2 -mt-1 text-xs text-slate-500">
+                Replies go here for this sender only. Prefer Settings → Shared Reply-To
+                so all 20–200 senders share one inbox.
+              </p>
+              <Input
                 label="Hourly limit"
                 type="number"
                 required
@@ -436,23 +462,66 @@ export function SmtpPage() {
                 value={form.daily_limit}
                 onChange={(e) => setForm((f) => ({ ...f, daily_limit: e.target.value }))}
               />
-              <label className="flex items-center gap-2 text-sm text-slate-300">
+              <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={form.warmup_enabled}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, warmup_enabled: e.target.checked }))
+                  }
+                  className="rounded border-slate-600 bg-slate-50"
+                />
+                Enable warmup ramp (start low, raise daily cap gradually)
+              </label>
+              {form.warmup_enabled && (
+                <>
+                  <Input
+                    label="Warmup start / day"
+                    type="number"
+                    value={form.warmup_start_daily}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, warmup_start_daily: e.target.value }))
+                    }
+                  />
+                  <Input
+                    label="Warmup target / day"
+                    type="number"
+                    value={form.warmup_target_daily}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, warmup_target_daily: e.target.value }))
+                    }
+                  />
+                  <Input
+                    label="Increase per day"
+                    type="number"
+                    value={form.warmup_increase_daily}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, warmup_increase_daily: e.target.value }))
+                    }
+                  />
+                  <p className="sm:col-span-2 text-xs text-slate-500">
+                    Simple ramp only (not Instantly&apos;s network). Campaign sends stay
+                    under the current warmup cap until it reaches the target.
+                  </p>
+                </>
+              )}
+              <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
                   checked={form.verify_ssl}
                   onChange={(e) => setForm((f) => ({ ...f, verify_ssl: e.target.checked }))}
-                  className="rounded border-slate-600 bg-slate-900"
+                  className="rounded border-slate-600 bg-slate-50"
                 />
                 Verify SSL certificate (disable for shared hosting mail servers)
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300 sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
                 <input
                   type="checkbox"
                   checked={form.save_copy_to_sent}
                   onChange={(e) =>
                     setForm((f) => ({ ...f, save_copy_to_sent: e.target.checked }))
                   }
-                  className="rounded border-slate-600 bg-slate-900"
+                  className="rounded border-slate-600 bg-slate-50"
                 />
                 Save copy to Namecheap Sent folder (via IMAP after each send)
               </label>
@@ -472,21 +541,21 @@ export function SmtpPage() {
                   />
                 </>
               )}
-              <label className="flex items-center gap-2 text-sm text-slate-300 sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
                 <input
                   type="checkbox"
                   checked={form.is_active}
                   onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))}
-                  className="rounded border-slate-600 bg-slate-900"
+                  className="rounded border-slate-600 bg-slate-50"
                 />
                 Active
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-300 sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
                 <input
                   type="checkbox"
                   checked={form.is_default}
                   onChange={(e) => setForm((f) => ({ ...f, is_default: e.target.checked }))}
-                  className="rounded border-slate-600 bg-slate-900"
+                  className="rounded border-slate-600 bg-slate-50"
                 />
                 Set as default
               </label>
@@ -512,7 +581,7 @@ export function SmtpPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-500">
+                <tr className="border-b border-slate-200 text-slate-500">
                   <th className="pb-3 pr-3">
                     <input
                       type="checkbox"
@@ -536,7 +605,7 @@ export function SmtpPage() {
               </thead>
               <tbody>
                 {servers.map((server) => (
-                  <tr key={server.id} className="border-b border-slate-800/60">
+                  <tr key={server.id} className="border-b border-slate-200/60">
                     <td className="py-3 pr-3">
                       <input
                         type="checkbox"
@@ -552,9 +621,9 @@ export function SmtpPage() {
                       />
                     </td>
                     <td className="py-3 pr-4">
-                      <div className="font-medium text-slate-200">{server.name}</div>
+                      <div className="font-medium text-slate-800">{server.name}</div>
                       {server.is_default && (
-                        <span className="mt-1 inline-block rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-400">
+                        <span className="mt-1 inline-block rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-600">
                           Default
                         </span>
                       )}
@@ -574,7 +643,7 @@ export function SmtpPage() {
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                           server.is_active
-                            ? "bg-emerald-500/10 text-emerald-400"
+                            ? "bg-emerald-500/10 text-emerald-600"
                             : "bg-slate-500/10 text-slate-400"
                         }`}
                       >
@@ -585,9 +654,9 @@ export function SmtpPage() {
                       <div
                         className={
                           server.last_test_success === true
-                            ? "text-emerald-400"
+                            ? "text-emerald-600"
                             : server.last_test_success === false
-                              ? "text-red-400"
+                              ? "text-red-600"
                               : "text-slate-500"
                         }
                       >
@@ -604,7 +673,7 @@ export function SmtpPage() {
                         <button
                           type="button"
                           onClick={() => openEdit(server)}
-                          className="text-xs text-indigo-400 hover:underline"
+                          className="text-xs text-indigo-600 hover:underline"
                         >
                           Edit
                         </button>
@@ -612,7 +681,7 @@ export function SmtpPage() {
                           type="button"
                           onClick={() => handleTest(server.id)}
                           disabled={testingId === server.id}
-                          className="text-xs text-indigo-400 hover:underline disabled:opacity-50"
+                          className="text-xs text-indigo-600 hover:underline disabled:opacity-50"
                         >
                           {testingId === server.id ? "Testing..." : "Test"}
                         </button>
@@ -628,7 +697,7 @@ export function SmtpPage() {
                         <button
                           type="button"
                           onClick={() => handleDelete(server.id)}
-                          className="text-xs text-red-400 hover:underline"
+                          className="text-xs text-red-600 hover:underline"
                         >
                           Delete
                         </button>

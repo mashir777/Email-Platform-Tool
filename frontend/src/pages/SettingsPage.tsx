@@ -34,6 +34,7 @@ export function SettingsPage() {
     phone: "",
     company_name: "",
     timezone: "UTC",
+    default_reply_to: "",
   });
 
   const [passwordForm, setPasswordForm] = useState({
@@ -50,6 +51,7 @@ export function SettingsPage() {
       phone: user.phone ?? "",
       company_name: user.company_name ?? "",
       timezone: user.timezone ?? "UTC",
+      default_reply_to: user.default_reply_to ?? "",
     });
   }, [user]);
 
@@ -92,12 +94,12 @@ export function SettingsPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
       {notice && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700">
           {notice}
         </div>
       )}
@@ -106,29 +108,35 @@ export function SettingsPage() {
         <dl className="grid gap-4 sm:grid-cols-2">
           <div>
             <dt className="text-xs text-slate-500">Full name</dt>
-            <dd className="mt-1 text-sm text-slate-200">
+            <dd className="mt-1 text-sm text-slate-800">
               {[user?.first_name, user?.last_name].filter(Boolean).join(" ") || "—"}
             </dd>
           </div>
           <div>
             <dt className="text-xs text-slate-500">Email</dt>
-            <dd className="mt-1 text-sm text-slate-200">{user?.email}</dd>
+            <dd className="mt-1 text-sm text-slate-800">{user?.email}</dd>
           </div>
           <div>
             <dt className="text-xs text-slate-500">Phone</dt>
-            <dd className="mt-1 text-sm text-slate-200">{user?.phone || "—"}</dd>
+            <dd className="mt-1 text-sm text-slate-800">{user?.phone || "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-500">Shared Reply-To</dt>
+            <dd className="mt-1 text-sm text-slate-800">
+              {user?.default_reply_to || "— (replies go to From address)"}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-slate-500">Timezone</dt>
-            <dd className="mt-1 text-sm text-slate-200">{user?.timezone}</dd>
+            <dd className="mt-1 text-sm text-slate-800">{user?.timezone}</dd>
           </div>
           <div>
             <dt className="text-xs text-slate-500">Company</dt>
-            <dd className="mt-1 text-sm text-slate-200">{user?.company_name || "—"}</dd>
+            <dd className="mt-1 text-sm text-slate-800">{user?.company_name || "—"}</dd>
           </div>
           <div>
             <dt className="text-xs text-slate-500">Role</dt>
-            <dd className="mt-1 text-sm capitalize text-slate-200">
+            <dd className="mt-1 text-sm capitalize text-slate-800">
               {user?.role.replace("_", " ")}
             </dd>
           </div>
@@ -166,7 +174,22 @@ export function SettingsPage() {
             }
           />
           <div className="sm:col-span-2">
-            <label className="mb-1.5 block text-sm font-medium text-slate-300">
+            <Input
+              label="Shared Reply-To inbox"
+              type="email"
+              placeholder="unsub@datrixworld.com"
+              value={profileForm.default_reply_to}
+              onChange={(e) =>
+                setProfileForm((f) => ({ ...f, default_reply_to: e.target.value }))
+              }
+            />
+            <p className="mt-1.5 text-xs text-slate-500">
+              One mailbox for replies from all senders (20 or 200). Create this address
+              on your hosting first. Leave blank to reply to each From address.
+            </p>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">
               Timezone
             </label>
             <select
@@ -174,7 +197,7 @@ export function SettingsPage() {
               onChange={(e) =>
                 setProfileForm((f) => ({ ...f, timezone: e.target.value }))
               }
-              className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
             >
               {timezoneOptions.map((tz) => (
                 <option key={tz} value={tz}>

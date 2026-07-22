@@ -32,6 +32,7 @@ export async function updateProfile(data: Partial<{
   phone: string;
   company_name: string;
   timezone: string;
+  default_reply_to: string;
 }>): Promise<{ user: User }> {
   return apiRequest<{ user: User }>("/profile/", {
     method: "PATCH",

@@ -294,7 +294,7 @@ export function SubscribersPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
@@ -308,21 +308,21 @@ export function SubscribersPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Card>
             <p className="text-sm text-slate-400">Total Emails</p>
-            <p className="mt-2 text-3xl font-bold text-white">{stats.total}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{stats.total}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Lists</p>
-            <p className="mt-2 text-3xl font-bold text-indigo-400">{stats.lists}</p>
+            <p className="mt-2 text-3xl font-bold text-indigo-600">{stats.lists}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Selected list sent</p>
-            <p className="mt-2 text-3xl font-bold text-emerald-400">
+            <p className="mt-2 text-3xl font-bold text-emerald-600">
               {listTotals ? listTotals.sent : "—"}
             </p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Selected list waiting</p>
-            <p className="mt-2 text-3xl font-bold text-amber-300">
+            <p className="mt-2 text-3xl font-bold text-amber-700">
               {listTotals ? listTotals.waiting : "—"}
             </p>
           </Card>
@@ -336,7 +336,7 @@ export function SubscribersPage() {
         >
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <label className="cursor-pointer">
-              <span className="inline-flex select-none caret-transparent items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-medium text-slate-100 hover:bg-slate-700">
+              <span className="inline-flex select-none caret-transparent items-center justify-center rounded-lg border border-slate-300 bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-900 hover:bg-slate-700">
                 Import CSV
               </span>
               <input
@@ -351,7 +351,7 @@ export function SubscribersPage() {
               />
             </label>
             <label className={`cursor-pointer ${isVerifyingCsv ? "pointer-events-none opacity-60" : ""}`}>
-              <span className="inline-flex select-none caret-transparent items-center justify-center rounded-lg border border-indigo-700/60 bg-indigo-950/40 px-4 py-2.5 text-sm font-medium text-indigo-100 hover:bg-indigo-900/40">
+              <span className="inline-flex select-none caret-transparent items-center justify-center rounded-lg border border-indigo-700/60 bg-indigo-950/40 px-4 py-2.5 text-sm font-medium text-indigo-900 hover:bg-indigo-900/40">
                 {isVerifyingCsv ? "Filtering CSV…" : "Filter CSV"}
               </span>
               <input
@@ -389,7 +389,7 @@ export function SubscribersPage() {
           </div>
 
           {showAddList && (
-            <form onSubmit={handleCreateList} className="mb-4 space-y-2 rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+            <form onSubmit={handleCreateList} className="mb-4 space-y-2 rounded-lg border border-slate-300 bg-slate-50 p-3">
               <Input
                 label="List name"
                 value={newListName}
@@ -426,7 +426,7 @@ export function SubscribersPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
-                  <tr className="border-b border-slate-800 text-slate-500">
+                  <tr className="border-b border-slate-200 text-slate-500">
                     <th className="pb-3 pr-3">
                       <input
                         type="checkbox"
@@ -453,10 +453,10 @@ export function SubscribersPage() {
                       <tr
                         key={list.id}
                         onClick={() => void handleSelectList(list.id)}
-                        className={`cursor-pointer border-b border-slate-800/60 transition ${
+                        className={`cursor-pointer border-b border-slate-200/60 transition ${
                           isSelected
-                            ? "bg-indigo-600/15"
-                            : "hover:bg-slate-900/80"
+                            ? "bg-indigo-50"
+                            : "hover:bg-white"
                         }`}
                       >
                         <td className="py-3 pr-3">
@@ -474,26 +474,26 @@ export function SubscribersPage() {
                             }
                           />
                         </td>
-                        <td className="py-3 pr-3 font-medium text-slate-100">{list.name}</td>
+                        <td className="py-3 pr-3 font-medium text-slate-900">{list.name}</td>
                         <td className="py-3 pr-3 text-slate-400">
                           {list.source_filename || "—"}
                         </td>
                         <td className="py-3 pr-3">
                           {list.is_verified ? (
-                            <span className="text-xs font-medium text-emerald-400">Verified</span>
+                            <span className="text-xs font-medium text-emerald-600">Verified</span>
                           ) : (
-                            <span className="text-xs font-medium text-amber-300">Not verified</span>
+                            <span className="text-xs font-medium text-amber-700">Not verified</span>
                           )}
                         </td>
-                        <td className="py-3 pr-3 text-slate-300">
+                        <td className="py-3 pr-3 text-slate-700">
                           {list.total_emails ?? list.subscriber_count}
                         </td>
-                        <td className="py-3 pr-3 text-emerald-400">{list.sent_emails ?? 0}</td>
-                        <td className="py-3 pr-3 text-amber-300">{list.waiting_emails ?? 0}</td>
+                        <td className="py-3 pr-3 text-emerald-600">{list.sent_emails ?? 0}</td>
+                        <td className="py-3 pr-3 text-amber-700">{list.waiting_emails ?? 0}</td>
                         <td className="py-3">
                           <button
                             type="button"
-                            className="text-xs text-red-400 hover:text-red-300"
+                            className="text-xs text-red-600 hover:text-red-700"
                             onClick={(event) => {
                               event.stopPropagation();
                               void handleDeleteList(list.id, list.name);
@@ -531,7 +531,7 @@ export function SubscribersPage() {
                   placeholder="Search emails in this list..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="min-w-[200px] flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  className="min-w-[200px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
                 />
                 <Button onClick={() => setShowAddSubscriber(true)}>+ Add email</Button>
                 {selectedSubscriberIds.length > 0 && (
@@ -544,7 +544,7 @@ export function SubscribersPage() {
               {showAddSubscriber && (
                 <form
                   onSubmit={handleCreateSubscriber}
-                  className="mb-4 rounded-lg border border-slate-700 bg-slate-900/50 p-4"
+                  className="mb-4 rounded-lg border border-slate-300 bg-slate-50 p-4"
                 >
                   <div className="grid gap-3 sm:grid-cols-3">
                     <Input
@@ -601,7 +601,7 @@ export function SubscribersPage() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead>
-                      <tr className="border-b border-slate-800 text-slate-500">
+                      <tr className="border-b border-slate-200 text-slate-500">
                         <th className="pb-3 pr-3">
                           <input
                             type="checkbox"
@@ -625,7 +625,7 @@ export function SubscribersPage() {
                     </thead>
                     <tbody>
                       {subscribers.map((sub) => (
-                        <tr key={sub.id} className="border-b border-slate-800/60">
+                        <tr key={sub.id} className="border-b border-slate-200/60">
                           <td className="py-3 pr-3">
                             <input
                               type="checkbox"
@@ -640,22 +640,22 @@ export function SubscribersPage() {
                               }
                             />
                           </td>
-                          <td className="py-3 pr-4 text-slate-200">{sub.email}</td>
+                          <td className="py-3 pr-4 text-slate-800">{sub.email}</td>
                           <td className="py-3 pr-4 text-slate-400">
                             {sub.full_name || "—"}
                           </td>
                           <td className="py-3 pr-4">
                             {sub.send_status === "sent" ? (
-                              <span className="text-emerald-400">Sent</span>
+                              <span className="text-emerald-600">Sent</span>
                             ) : (
-                              <span className="text-amber-300">Waiting</span>
+                              <span className="text-amber-700">Waiting</span>
                             )}
                           </td>
                           <td className="py-3 text-right">
                             <button
                               type="button"
                               onClick={() => void handleDeleteSubscriber(sub.id)}
-                              className="text-xs text-red-400 hover:text-red-300"
+                              className="text-xs text-red-600 hover:text-red-700"
                             >
                               Delete
                             </button>

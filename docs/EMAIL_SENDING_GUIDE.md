@@ -76,6 +76,8 @@ Click **Send Now** → confirm
 | SPF / DKIM / DMARC | **Domains** section — add domain, DNS records, Verify |
 | Amazon SES / Mailgun | **SMTP** section — add as delivery server |
 | Bounce mailbox | Future phase (not built yet) |
+| Shared Reply-To (one inbox for many senders) | **Settings → Shared Reply-To inbox** (optional per-SMTP override on SMTP page). Create the mailbox on hosting first. |
+| Instantly-style Unibox / warmup (ideas) | **Unibox** page + SMTP warmup ramp — see [INSTANTLY_FEATURE_MAP.md](INSTANTLY_FEATURE_MAP.md) |
 | Import + verify list | **Subscribers** → CSV import |
 | Test batch | Send to 1–2 test emails first |
 | 500k/month scale | SES + VPS + Redis workers in production |

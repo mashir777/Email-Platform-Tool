@@ -83,12 +83,12 @@ export function VerifyEmailPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
-      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-center shadow-xl">
+    <div className="flex min-h-screen items-center justify-center bg-white px-4">
+      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 text-center shadow-xl">
         <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-600 text-lg font-bold text-white">
           EP
         </div>
-        <h1 className="text-xl font-semibold text-white">Email verification</h1>
+        <h1 className="text-xl font-semibold text-slate-900">Email verification</h1>
 
         {status === "loading" && (
           <p className="mt-4 text-sm text-slate-400">Verifying your email…</p>
@@ -97,7 +97,7 @@ export function VerifyEmailPage() {
         {status !== "loading" && (
           <p
             className={`mt-4 text-sm ${
-              status === "success" ? "text-emerald-300" : "text-amber-200"
+              status === "success" ? "text-emerald-700" : "text-amber-800"
             }`}
           >
             {message}
@@ -105,7 +105,7 @@ export function VerifyEmailPage() {
         )}
 
         {resendMessage && (
-          <p className="mt-3 text-sm text-slate-300">{resendMessage}</p>
+          <p className="mt-3 text-sm text-slate-700">{resendMessage}</p>
         )}
 
         <div className="mt-6 flex flex-col gap-3">
@@ -124,7 +124,7 @@ export function VerifyEmailPage() {
           {(status === "error" || status === "missing") && (
             <Link
               to="/login"
-              className="text-sm font-medium text-indigo-400 hover:text-indigo-300"
+              className="text-sm font-medium text-indigo-600 hover:text-indigo-700"
             >
               Back to Login
             </Link>

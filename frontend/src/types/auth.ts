@@ -10,6 +10,7 @@ export interface User {
   phone: string;
   company_name: string;
   timezone: string;
+  default_reply_to: string;
   avatar: string | null;
   avatar_url: string | null;
   is_verified: boolean;

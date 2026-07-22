@@ -89,6 +89,18 @@ def _requeue_item_for_resend(*, queue_item, assigned_server) -> None:
     )
 
 
+def get_effective_daily_limit(smtp_server: SmtpServer) -> int:
+    """Daily send cap — respects simple warmup ramp when enabled."""
+    configured = max(int(smtp_server.daily_limit or 1), 1)
+    if not getattr(smtp_server, "warmup_enabled", False):
+        return configured
+    current = int(smtp_server.warmup_current_daily or 0)
+    if current <= 0:
+        current = max(int(smtp_server.warmup_start_daily or 1), 1)
+    target = max(int(smtp_server.warmup_target_daily or current), current)
+    return max(1, min(configured, current, target))
+
+
 def compute_send_interval_seconds(smtp_server: SmtpServer) -> int:
     """Seconds between consecutive sends based on hourly limit (minimum 60s)."""
     hourly = max(int(smtp_server.hourly_limit or 1), 1)
@@ -130,9 +142,10 @@ def can_send_email(*, smtp_server: SmtpServer) -> bool:
         >= smtp_server.hourly_limit
     ):
         return False
+    daily_cap = get_effective_daily_limit(smtp_server)
     if (
         _count_sent_since(smtp_server_id=smtp_server.id, since=now - timedelta(days=1))
-        >= smtp_server.daily_limit
+        >= daily_cap
     ):
         return False
 
@@ -153,13 +166,14 @@ def can_send_email(*, smtp_server: SmtpServer) -> bool:
 
 
 def get_next_pending_queue_item(*, smtp_server_id=None):
+    """Next pending item in queue order (oldest first = list order when queued)."""
     qs = EmailQueueItem.objects.filter(
         status=EmailQueueItem.Status.PENDING,
         campaign__status=Campaign.Status.SENDING,
-    ).select_related("campaign", "subscriber", "smtp_server")
+    ).select_related("campaign", "subscriber", "smtp_server", "smtp_server__owner")
     if smtp_server_id:
         qs = qs.filter(smtp_server_id=smtp_server_id)
-    return qs.order_by("created_at").first()
+    return qs.order_by("created_at", "id").first()
 
 
 def has_pending_queue_items() -> bool:
@@ -170,39 +184,29 @@ def has_pending_queue_items() -> bool:
 
 
 def run_pending_email_queue() -> dict:
-    """Send one pending email per SMTP server that is allowed to send."""
-    processed = 0
-    for server in SmtpServer.objects.filter(is_active=True).iterator():
-        if not can_send_email(smtp_server=server):
-            continue
-        item = get_next_pending_queue_item(smtp_server_id=server.id)
-        if not item:
-            continue
-        process_queue_item(queue_item=item)
-        finalize_campaign_if_complete(campaign=item.campaign)
-        processed += 1
+    """
+    Send one pending email at a time in queue/list order.
 
-    if processed == 0:
-        item = (
-            EmailQueueItem.objects.filter(
-                status=EmailQueueItem.Status.PENDING,
-                campaign__status=Campaign.Status.SENDING,
-            )
-            .select_related("campaign", "subscriber", "smtp_server")
-            .order_by("created_at")
-            .first()
-        )
-        if item:
-            smtp_server = item.smtp_server or get_default_smtp_server(item.campaign.owner)
-            if smtp_server and can_send_email(smtp_server=smtp_server):
-                if not item.smtp_server_id:
-                    item.smtp_server = smtp_server
-                    item.save(update_fields=["smtp_server", "updated_at"])
-                process_queue_item(queue_item=item)
-                finalize_campaign_if_complete(campaign=item.campaign)
-                processed += 1
+    Do not send in parallel across SMTP servers — that breaks
+    "first sender N, then next sender" sequencing.
+    """
+    item = get_next_pending_queue_item()
+    if not item:
+        return {"processed": 0}
 
-    return {"processed": processed}
+    smtp_server = item.smtp_server or get_default_smtp_server(item.campaign.owner)
+    if not smtp_server:
+        return {"processed": 0}
+    if not can_send_email(smtp_server=smtp_server):
+        return {"processed": 0}
+
+    if not item.smtp_server_id:
+        item.smtp_server = smtp_server
+        item.save(update_fields=["smtp_server", "updated_at"])
+
+    process_queue_item(queue_item=item)
+    finalize_campaign_if_complete(campaign=item.campaign)
+    return {"processed": 1}
 
 
 def get_default_smtp_server(owner):
@@ -226,8 +230,94 @@ def get_active_smtp_servers(owner):
     )
 
 
-def _pick_smtp_server(servers: list[SmtpServer], index: int) -> SmtpServer:
-    return servers[index % len(servers)]
+def resolve_campaign_smtp_servers(campaign: Campaign) -> list[SmtpServer]:
+    """Active SMTP senders for this campaign (selected IDs in saved order, or all active)."""
+    active = get_active_smtp_servers(campaign.owner)
+    active_by_id = {str(server.id): server for server in active}
+    raw_ids = getattr(campaign, "smtp_server_ids", None) or []
+    if not raw_ids:
+        return active
+    selected: list[SmtpServer] = []
+    for value in raw_ids:
+        server = active_by_id.get(str(value))
+        if server is not None and server not in selected:
+            selected.append(server)
+    if not selected:
+        raise ValidationError(
+            {
+                "smtp_server_ids": [
+                    "Select at least one active sender (SMTP mailbox) for this campaign.",
+                ],
+            },
+        )
+    return selected
+
+
+def _subscribed_recipients_in_list_order(subscriber_list) -> list[Subscriber]:
+    """List emails in upload/membership order (first uploaded = index 0)."""
+    ordered_ids = list(
+        ListMembership.objects.filter(list=subscriber_list)
+        .order_by("added_at", "id")
+        .values_list("subscriber_id", flat=True),
+    )
+    if not ordered_ids:
+        return []
+    by_id = {
+        subscriber.id: subscriber
+        for subscriber in Subscriber.objects.filter(
+            id__in=ordered_ids,
+            status=Subscriber.Status.SUBSCRIBED,
+        )
+    }
+    return [by_id[subscriber_id] for subscriber_id in ordered_ids if subscriber_id in by_id]
+
+
+def _pick_smtp_server(
+    servers: list[SmtpServer],
+    index: int,
+    emails_per_sender: int | None = None,
+) -> SmtpServer | None:
+    """
+    Top sender first: each selected sender sends N from the list (next rows only),
+    then stop. No wrap back. N defaults to 1 when unset.
+    """
+    batch = emails_per_sender if emails_per_sender and emails_per_sender > 0 else 1
+    sender_index = index // batch
+    if sender_index >= len(servers):
+        return None
+    return servers[sender_index]
+
+
+def _skip_over_send_limit(
+    *,
+    campaign: Campaign,
+    subscriber: Subscriber,
+    smtp_server: SmtpServer,
+    existing: EmailQueueItem | None = None,
+) -> None:
+    """Skip remaining list rows after each sender has used its limit once."""
+    message = (
+        "Sending limit reached — each selected sender sent its set limit; campaign stopped."
+    )
+    if existing is None:
+        EmailQueueItem.objects.create(
+            owner=campaign.owner,
+            campaign=campaign,
+            subscriber=subscriber,
+            smtp_server=smtp_server,
+            to_email=subscriber.email,
+            status=EmailQueueItem.Status.SKIPPED,
+            last_error=message,
+        )
+        return
+    if existing.status == EmailQueueItem.Status.SENT:
+        return
+    existing.smtp_server = smtp_server
+    existing.status = EmailQueueItem.Status.SKIPPED
+    existing.last_error = message
+    existing.save(
+        update_fields=["smtp_server", "status", "last_error", "updated_at"],
+    )
 
 
 def _personalize(content: str, subscriber: Subscriber) -> str:
@@ -301,6 +391,33 @@ def _format_html_message(content: str) -> str:
     )
 
 
+def _resolve_reply_to_email(*, smtp_server: SmtpServer, sender_email: str) -> str:
+    """
+    Reply must go to BOTH:
+    1) the address the mail was sent from
+    2) Reply-To (SMTP reply_to_email or account default_reply_to), when set
+    """
+    send_from = (sender_email or "").strip() or (getattr(smtp_server, "from_email", "") or "").strip()
+
+    per_server = (getattr(smtp_server, "reply_to_email", "") or "").strip()
+    owner = getattr(smtp_server, "owner", None)
+    if owner is None and getattr(smtp_server, "owner_id", None):
+        owner = smtp_server.owner
+    owner_default = (getattr(owner, "default_reply_to", "") or "").strip() if owner else ""
+    shared = per_server or owner_default
+
+    # No shared Reply-To → leave empty so clients reply to From only.
+    if not shared:
+        return ""
+    # Shared same as From → one address is enough.
+    if send_from and shared.lower() == send_from.lower():
+        return ""
+    # Both required: From (sender) + Reply-To inbox.
+    if send_from:
+        return f"{send_from}, {shared}"
+    return shared
+
+
 def send_message_via_smtp(
     *,
     smtp_server: SmtpServer,
@@ -311,7 +428,7 @@ def send_message_via_smtp(
     from_email: str = "",
     from_name: str = "",
 ):
-    sender_email = from_email or smtp_server.from_email
+    sender_email = (from_email or smtp_server.from_email or "").strip()
     sender_name = from_name or smtp_server.from_name
     from_header = f"{sender_name} <{sender_email}>" if sender_name else sender_email
 
@@ -321,7 +438,15 @@ def send_message_via_smtp(
     message["To"] = to_email
     message["Date"] = formatdate(localtime=True)
     message["Message-ID"] = make_msgid(domain=sender_email.split("@")[-1] if "@" in sender_email else None)
-    message["Reply-To"] = sender_email
+    reply_to = _resolve_reply_to_email(
+        smtp_server=smtp_server,
+        sender_email=sender_email,
+    )
+    if reply_to:
+        if "Reply-To" in message:
+            del message["Reply-To"]
+        # Explicit mailbox-list so clients put both addresses on Reply.
+        message["Reply-To"] = reply_to
     # MIMEMultipart already sets MIME-Version; setting it again makes a duplicate
     # header that AWS SES rejects with 554 "Duplicate header 'MIME-Version'".
 
@@ -331,8 +456,12 @@ def send_message_via_smtp(
         message.attach(MIMEText(html_content, "html", "utf-8"))
 
     with connect_smtp_server(smtp_server=smtp_server) as server:
-        envelope_from = (from_email or smtp_server.from_email).strip()
-        server.sendmail(envelope_from, [to_email], message.as_string())
+        envelope_from = sender_email or (smtp_server.from_email or "").strip()
+        raw = message.as_string()
+        # Ensure Reply-To survives serialization (some policies collapse address lists).
+        if reply_to and "Reply-To:" not in raw and "reply-to:" not in raw.lower():
+            raw = f"Reply-To: {reply_to}\r\n" + raw
+        server.sendmail(envelope_from, [to_email], raw)
 
     save_message_to_sent_folder(smtp_server=smtp_server, message=message)
 
@@ -417,12 +546,8 @@ def _email_domain(email: str) -> str:
 
 
 def _resolve_from_email(campaign: Campaign, smtp_server: SmtpServer | None) -> str:
+    # Always use the assigned sender mailbox when present (multi-sender safe).
     if smtp_server and smtp_server.from_email:
-        smtp_domain = _email_domain(smtp_server.from_email)
-        if campaign.from_email:
-            campaign_domain = _email_domain(campaign.from_email)
-            if campaign_domain == smtp_domain:
-                return campaign.from_email.strip()
         return smtp_server.from_email.strip()
     if campaign.from_email and "gmail.com" not in _email_domain(campaign.from_email):
         return campaign.from_email.strip()
@@ -435,10 +560,11 @@ def _resolve_from_email(campaign: Campaign, smtp_server: SmtpServer | None) -> s
 
 
 def _resolve_from_name(campaign: Campaign, smtp_server: SmtpServer | None) -> str:
-    if campaign.from_name:
-        return campaign.from_name
+    # Prefer each SMTP sender's own display name (Ava / Mia / …).
     if smtp_server and smtp_server.from_name:
         return smtp_server.from_name
+    if campaign.from_name:
+        return campaign.from_name
     return ""
 
 
@@ -446,23 +572,23 @@ def _resolve_from_name(campaign: Campaign, smtp_server: SmtpServer | None) -> st
 def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None):
     _validate_campaign_for_send(campaign)
 
-    servers = get_active_smtp_servers(campaign.owner)
+    servers = resolve_campaign_smtp_servers(campaign)
     if not servers:
         raise ValidationError(
             {
                 "smtp": [
-                    "No active SMTP servers. Add mailboxes under SMTP or import CSV.",
+                    "No active SMTP servers. Add mailboxes under SMTP or Sender.",
                 ],
             },
         )
 
     if smtp_server is None:
         smtp_server = get_default_smtp_server(campaign.owner) or servers[0]
+    elif smtp_server.id not in {s.id for s in servers}:
+        smtp_server = servers[0]
 
-    recipients = campaign.subscriber_list.subscribers.filter(
-        status=Subscriber.Status.SUBSCRIBED,
-    )
-    recipient_count = recipients.count()
+    recipients = _subscribed_recipients_in_list_order(campaign.subscriber_list)
+    recipient_count = len(recipients)
     if recipient_count == 0:
         raise ValidationError(
             {
@@ -473,7 +599,7 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             },
         )
 
-    recipient_ids = list(recipients.values_list("id", flat=True))
+    recipient_ids = [subscriber.id for subscriber in recipients]
     membership_added_at = _list_membership_added_at_by_subscriber(
         subscriber_list=campaign.subscriber_list,
     )
@@ -489,15 +615,16 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
     campaign.save(update_fields=["status", "recipient_count", "updated_at"])
 
     queued = 0
-    for index, subscriber in enumerate(recipients.iterator()):
-        assigned_server = _pick_smtp_server(servers, index)
+    send_index = 0
+    emails_per_sender = getattr(campaign, "emails_per_sender", None)
+    for subscriber in recipients:
         if subscriber.id in already_sent_ids:
             EmailQueueItem.objects.get_or_create(
                 campaign=campaign,
                 subscriber=subscriber,
                 defaults={
                     "owner": campaign.owner,
-                    "smtp_server": assigned_server,
+                    "smtp_server": servers[0],
                     "to_email": subscriber.email,
                     "status": EmailQueueItem.Status.SKIPPED,
                     "last_error": "Already sent previously — skipped.",
@@ -505,41 +632,58 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             )
             continue
 
-        item, was_created = EmailQueueItem.objects.get_or_create(
+        item = EmailQueueItem.objects.filter(
             campaign=campaign,
             subscriber=subscriber,
-            defaults={
-                "owner": campaign.owner,
-                "smtp_server": assigned_server,
-                "to_email": subscriber.email,
-                "status": EmailQueueItem.Status.PENDING,
-            },
-        )
-        if was_created:
+        ).first()
+        if (
+            item is not None
+            and item.status == EmailQueueItem.Status.SENT
+            and not _should_requeue_after_csv_reimport(
+                queue_item=item,
+                membership_added_at=membership_added_at,
+            )
+        ):
+            continue
+
+        assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
+        if assigned_server is None:
+            _skip_over_send_limit(
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=servers[0],
+                existing=item,
+            )
+            continue
+        send_index += 1
+
+        if item is None:
+            EmailQueueItem.objects.create(
+                owner=campaign.owner,
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=assigned_server,
+                to_email=subscriber.email,
+                status=EmailQueueItem.Status.PENDING,
+            )
             queued += 1
             continue
 
         updates = []
+        was_sent = item.status == EmailQueueItem.Status.SENT
         if item.status in {
             EmailQueueItem.Status.FAILED,
             EmailQueueItem.Status.SKIPPED,
+            EmailQueueItem.Status.SENT,
         }:
-            if subscriber.id in already_sent_ids:
-                continue
             item.status = EmailQueueItem.Status.PENDING
             item.last_error = ""
             updates.extend(["status", "last_error"])
-        elif item.status == EmailQueueItem.Status.SENT:
-            if _should_requeue_after_csv_reimport(
-                queue_item=item,
-                membership_added_at=membership_added_at,
-            ):
-                item.status = EmailQueueItem.Status.PENDING
-                item.last_error = ""
+            if item.sent_at is not None:
                 item.sent_at = None
-                updates.extend(["status", "last_error", "sent_at"])
+                updates.append("sent_at")
+            if was_sent:
                 queued += 1
-            continue
         if item.smtp_server_id != assigned_server.id:
             item.smtp_server = assigned_server
             updates.append("smtp_server")
@@ -554,78 +698,99 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
 
 @transaction.atomic
 def requeue_campaign_items(*, campaign: Campaign):
-    """Reset failed/pending items and reassign SMTP servers (round-robin)."""
+    """Reset failed/pending items and reassign SMTP servers (list-order batches)."""
     _validate_campaign_for_send(campaign, allow_sending=True)
 
-    servers = get_active_smtp_servers(campaign.owner)
+    servers = resolve_campaign_smtp_servers(campaign)
     if not servers:
         raise ValidationError(
             {"smtp": ["No active SMTP servers configured."]},
         )
 
-    recipients = campaign.subscriber_list.subscribers.filter(
-        status=Subscriber.Status.SUBSCRIBED,
-    )
-    campaign.recipient_count = recipients.count()
+    recipients = _subscribed_recipients_in_list_order(campaign.subscriber_list)
+    campaign.recipient_count = len(recipients)
     campaign.save(update_fields=["recipient_count", "updated_at"])
 
-    existing_subscriber_ids = set(
-        campaign.queue_items.values_list("subscriber_id", flat=True),
-    )
-    for index, subscriber in enumerate(recipients.iterator()):
-        if subscriber.id in existing_subscriber_ids:
-            continue
-        assigned_server = _pick_smtp_server(servers, index)
-        EmailQueueItem.objects.create(
-            owner=campaign.owner,
-            campaign=campaign,
-            subscriber=subscriber,
-            smtp_server=assigned_server,
-            to_email=subscriber.email,
-            status=EmailQueueItem.Status.PENDING,
-        )
+    existing_by_subscriber = {
+        item.subscriber_id: item
+        for item in campaign.queue_items.select_related("subscriber")
+    }
+    emails_per_sender = getattr(campaign, "emails_per_sender", None)
+    send_index = 0
+    requeued = 0
 
-    items = campaign.queue_items.filter(
-        status__in=[
+    for subscriber in recipients:
+        item = existing_by_subscriber.get(subscriber.id)
+        if item is None:
+            assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
+            if assigned_server is None:
+                _skip_over_send_limit(
+                    campaign=campaign,
+                    subscriber=subscriber,
+                    smtp_server=servers[0],
+                )
+                continue
+            send_index += 1
+            EmailQueueItem.objects.create(
+                owner=campaign.owner,
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=assigned_server,
+                to_email=subscriber.email,
+                status=EmailQueueItem.Status.PENDING,
+            )
+            requeued += 1
+            continue
+
+        if item.status not in {
             EmailQueueItem.Status.PENDING,
             EmailQueueItem.Status.FAILED,
-        ],
-    ).order_by("created_at")
+        }:
+            continue
 
-    for index, item in enumerate(items):
-        assigned_server = _pick_smtp_server(servers, index)
+        assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
+        if assigned_server is None:
+            _skip_over_send_limit(
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=servers[0],
+                existing=item,
+            )
+            continue
+        send_index += 1
         item.smtp_server = assigned_server
         item.status = EmailQueueItem.Status.PENDING
         item.last_error = ""
         item.save(
             update_fields=["smtp_server", "status", "last_error", "updated_at"],
         )
+        requeued += 1
 
     if campaign.status != Campaign.Status.SENDING:
         campaign.status = Campaign.Status.SENDING
         campaign.save(update_fields=["status", "updated_at"])
 
-    return items.count()
+    return requeued
 
 
 @transaction.atomic
 def extend_campaign_for_send(*, campaign: Campaign) -> int:
-    """Re-open a sent campaign when new real subscribers were added to the list."""
-    servers = get_active_smtp_servers(campaign.owner)
+    """
+    Resume / Send Again: queue the next N×senders of still-waiting list emails.
+
+    Already-sent rows are skipped; next rows get the next sender batch, then stop
+    again until the user resumes.
+    """
+    servers = resolve_campaign_smtp_servers(campaign)
     if not servers:
         raise ValidationError(
             {"smtp": ["No active SMTP servers configured."]},
         )
 
-    recipients = campaign.subscriber_list.subscribers.filter(
-        status=Subscriber.Status.SUBSCRIBED,
-    )
-    recipient_ids = list(recipients.values_list("id", flat=True))
+    recipients = _subscribed_recipients_in_list_order(campaign.subscriber_list)
+    recipient_ids = [subscriber.id for subscriber in recipients]
     membership_added_at = _list_membership_added_at_by_subscriber(
         subscriber_list=campaign.subscriber_list,
-    )
-    existing_subscriber_ids = set(
-        campaign.queue_items.values_list("subscriber_id", flat=True),
     )
     already_sent_ids = _subscribers_sent_since_list_import(
         owner=campaign.owner,
@@ -634,65 +799,104 @@ def extend_campaign_for_send(*, campaign: Campaign) -> int:
         membership_added_at=membership_added_at,
     )
 
+    waiting = [
+        subscriber
+        for subscriber in recipients
+        if subscriber.id not in already_sent_ids
+        and not is_undeliverable_email(subscriber.email)
+    ]
+    if not waiting:
+        return 0
+
+    emails_per_sender = getattr(campaign, "emails_per_sender", None) or 1
+    batch_size = emails_per_sender * len(servers)
+    batch = waiting[:batch_size]
+    remainder = waiting[batch_size:]
+
+    existing_by_subscriber = {
+        item.subscriber_id: item
+        for item in campaign.queue_items.select_related("subscriber")
+    }
+
     pending_added = 0
-    for index, item in enumerate(
-        campaign.queue_items.select_related("subscriber").order_by("created_at"),
-    ):
-        if not _should_requeue_after_csv_reimport(
-            queue_item=item,
-            membership_added_at=membership_added_at,
-        ):
+    for send_index, subscriber in enumerate(batch):
+        assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
+        if assigned_server is None:
+            _skip_over_send_limit(
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=servers[0],
+                existing=existing_by_subscriber.get(subscriber.id),
+            )
             continue
-        if item.subscriber_id in already_sent_ids:
+
+        item = existing_by_subscriber.get(subscriber.id)
+        if item is None:
+            EmailQueueItem.objects.create(
+                owner=campaign.owner,
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=assigned_server,
+                to_email=subscriber.email,
+                status=EmailQueueItem.Status.PENDING,
+            )
+            pending_added += 1
             continue
-        assigned_server = _pick_smtp_server(servers, index)
-        _requeue_item_for_resend(queue_item=item, assigned_server=assigned_server)
+
+        if item.status == EmailQueueItem.Status.SENT:
+            continue
+
+        item.smtp_server = assigned_server
+        item.status = EmailQueueItem.Status.PENDING
+        item.last_error = ""
+        item.sent_at = None
+        item.save(
+            update_fields=[
+                "smtp_server",
+                "status",
+                "last_error",
+                "sent_at",
+                "updated_at",
+            ],
+        )
         pending_added += 1
 
-    for index, subscriber in enumerate(recipients.iterator()):
-        if subscriber.id in existing_subscriber_ids:
-            continue
-        assigned_server = _pick_smtp_server(servers, index)
-        if subscriber.id in already_sent_ids:
-            EmailQueueItem.objects.create(
-                owner=campaign.owner,
-                campaign=campaign,
-                subscriber=subscriber,
-                smtp_server=assigned_server,
-                to_email=subscriber.email,
-                status=EmailQueueItem.Status.SKIPPED,
-                last_error="Already sent previously — skipped.",
-            )
-            continue
-        if is_undeliverable_email(subscriber.email):
-            EmailQueueItem.objects.create(
-                owner=campaign.owner,
-                campaign=campaign,
-                subscriber=subscriber,
-                smtp_server=assigned_server,
-                to_email=subscriber.email,
-                status=EmailQueueItem.Status.SKIPPED,
-                last_error=(
-                    "Test/fake address (@example.com etc.) cannot receive mail. "
-                    "Use a real Gmail address."
-                ),
-            )
-            continue
+    for subscriber in remainder:
+        _skip_over_send_limit(
+            campaign=campaign,
+            subscriber=subscriber,
+            smtp_server=servers[0],
+            existing=existing_by_subscriber.get(subscriber.id),
+        )
 
+    for subscriber in recipients:
+        if subscriber.id in already_sent_ids:
+            continue
+        if not is_undeliverable_email(subscriber.email):
+            continue
+        item = existing_by_subscriber.get(subscriber.id)
+        if item is not None:
+            continue
         EmailQueueItem.objects.create(
             owner=campaign.owner,
             campaign=campaign,
             subscriber=subscriber,
-            smtp_server=assigned_server,
+            smtp_server=servers[0],
             to_email=subscriber.email,
-            status=EmailQueueItem.Status.PENDING,
+            status=EmailQueueItem.Status.SKIPPED,
+            last_error=(
+                "Test/fake address (@example.com etc.) cannot receive mail. "
+                "Use a real Gmail address."
+            ),
         )
-        pending_added += 1
 
     if pending_added > 0:
         campaign.status = Campaign.Status.SENDING
-        campaign.recipient_count = recipients.count()
-        campaign.save(update_fields=["status", "recipient_count", "updated_at"])
+        campaign.recipient_count = len(recipients)
+        campaign.sent_at = None
+        campaign.save(
+            update_fields=["status", "recipient_count", "sent_at", "updated_at"],
+        )
 
     return pending_added
 
@@ -856,7 +1060,10 @@ def get_campaign_send_summary(campaign: Campaign) -> dict:
     items = campaign.queue_items.all()
     failed_items = items.filter(status=EmailQueueItem.Status.FAILED)
     pending = items.filter(status=EmailQueueItem.Status.PENDING).count()
-    active_servers = get_active_smtp_servers(campaign.owner)
+    try:
+        active_servers = resolve_campaign_smtp_servers(campaign)
+    except ValidationError:
+        active_servers = get_active_smtp_servers(campaign.owner)
     smtp_server = active_servers[0] if active_servers else get_default_smtp_server(campaign.owner)
     per_server_interval = (
         compute_send_interval_seconds(smtp_server) if smtp_server else MIN_SEND_INTERVAL_SECONDS

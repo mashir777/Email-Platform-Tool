@@ -60,6 +60,7 @@ LOCAL_APPS = [
     "sending",
     "reports",
     "email_templates",
+    "inbox",
     "settings_app",
     "billing",
     "api",
@@ -167,6 +168,14 @@ CELERY_BEAT_SCHEDULE = {
     "run-pending-email-queue": {
         "task": "sending.tasks.run_pending_email_queue_task",
         "schedule": 60.0,
+    },
+    "sync-unibox-inboxes": {
+        "task": "inbox.tasks.sync_all_inboxes",
+        "schedule": 300.0,
+    },
+    "advance-smtp-warmup": {
+        "task": "smtp_servers.tasks.advance_warmup_limits",
+        "schedule": 86400.0,
     },
 }
 

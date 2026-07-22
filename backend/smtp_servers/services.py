@@ -33,6 +33,11 @@ def create_smtp_server(*, owner, password, **fields):
     if fields.get("is_default"):
         _clear_default_flag(owner)
 
+    if fields.get("warmup_enabled"):
+        start = max(int(fields.get("warmup_start_daily") or 5), 1)
+        fields.setdefault("warmup_current_daily", start)
+        fields.setdefault("warmup_started_at", timezone.now())
+
     encrypted = encrypt_value(password) if password else ""
     return SmtpServer.objects.create(
         owner=owner,
@@ -58,6 +63,17 @@ def update_smtp_server(*, smtp_server, password=None, **validated_data):
 
     if password:
         validated_data["password_encrypted"] = encrypt_value(password)
+
+    enabling_warmup = (
+        validated_data.get("warmup_enabled") is True and not smtp_server.warmup_enabled
+    )
+    if enabling_warmup:
+        start = max(
+            int(validated_data.get("warmup_start_daily") or smtp_server.warmup_start_daily or 5),
+            1,
+        )
+        validated_data.setdefault("warmup_current_daily", start)
+        validated_data.setdefault("warmup_started_at", timezone.now())
 
     for field, value in validated_data.items():
         setattr(smtp_server, field, value)

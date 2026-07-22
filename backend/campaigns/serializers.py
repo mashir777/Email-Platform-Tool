@@ -19,6 +19,8 @@ class CampaignSerializer(serializers.ModelSerializer):
             "subject",
             "from_name",
             "from_email",
+            "smtp_server_ids",
+            "emails_per_sender",
             "html_content",
             "text_content",
             "status",
@@ -53,6 +55,18 @@ class CampaignCreateSerializer(serializers.Serializer):
     text_content = serializers.CharField(required=False, allow_blank=True, default="")
     subscriber_list_id = serializers.UUIDField(required=False, allow_null=True)
     message_version_id = serializers.UUIDField(required=False, allow_null=True)
+    smtp_server_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        default=list,
+    )
+    emails_per_sender = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+        default=1,
+    )
 
 
 class CampaignUpdateSerializer(serializers.Serializer):
@@ -64,6 +78,16 @@ class CampaignUpdateSerializer(serializers.Serializer):
     text_content = serializers.CharField(required=False, allow_blank=True)
     subscriber_list_id = serializers.UUIDField(required=False, allow_null=True)
     message_version_id = serializers.UUIDField(required=False, allow_null=True)
+    smtp_server_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+    )
+    emails_per_sender = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=1,
+    )
 
 
 class CampaignScheduleSerializer(serializers.Serializer):

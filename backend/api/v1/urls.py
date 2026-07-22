@@ -10,4 +10,5 @@ urlpatterns = [
     path("smtp/", include("smtp_servers.urls")),
     path("domains/", include("domains.urls")),
     path("reports/", include("reports.urls")),
+    path("inbox/", include("inbox.urls")),
 ]

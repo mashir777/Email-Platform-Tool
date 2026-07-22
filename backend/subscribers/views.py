@@ -135,7 +135,10 @@ class SubscriberCollectionView(APIView):
         search = request.query_params.get("search")
 
         if list_id:
-            qs = qs.filter(lists__id=list_id)
+            qs = qs.filter(memberships__list_id=list_id).order_by(
+                "memberships__added_at",
+                "id",
+            )
         if status_filter:
             qs = qs.filter(status=status_filter)
         if search:

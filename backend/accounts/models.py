@@ -41,6 +41,11 @@ class User(AbstractUser):
     phone = models.CharField(max_length=20, blank=True)
     company_name = models.CharField(max_length=255, blank=True)
     timezone = models.CharField(max_length=63, default="UTC")
+    # Shared Reply-To for all sends (20–200 senders → one inbox). Empty = use From.
+    default_reply_to = models.EmailField(
+        blank=True,
+        help_text=_("Shared inbox for replies. Overrides per-SMTP Reply-To when set."),
+    )
     avatar = models.ImageField(
         upload_to=avatar_upload_path,
         blank=True,

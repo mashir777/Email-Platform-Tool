@@ -8,9 +8,9 @@ import { Input } from "@/components/ui/Input";
 import type { DnsRecord, DomainStats, SendingDomain } from "@/types/domains";
 
 const statusColors: Record<string, string> = {
-  pending: "text-amber-400 bg-amber-400/10",
-  verified: "text-emerald-400 bg-emerald-400/10",
-  failed: "text-red-400 bg-red-400/10",
+  pending: "text-amber-600 bg-amber-400/10",
+  verified: "text-emerald-600 bg-emerald-400/10",
+  failed: "text-red-600 bg-red-400/10",
 };
 
 function purposeLabel(purpose: string): string {
@@ -161,9 +161,9 @@ export function DomainsPage() {
     return (
       <div className="mt-3 space-y-3">
         {pendingRequired.length > 0 && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800">
             <p className="font-semibold">Action required</p>
-            <p className="mt-1 text-amber-200/90">
+            <p className="mt-1 text-amber-800/90">
               Add the pending records in your DNS panel (Namecheap, cPanel, Cloudflare, etc.),
               then wait 5–30 minutes and click Verify.
             </p>
@@ -181,15 +181,15 @@ export function DomainsPage() {
         {records.map((record) => (
           <div
             key={`${record.purpose}-${record.host}`}
-            className="rounded-lg border border-slate-700 bg-slate-900/60 p-3"
+            className="rounded-lg border border-slate-300 bg-white p-3"
           >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold uppercase tracking-wide text-indigo-300">
+                <span className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
                   {purposeLabel(record.purpose)} ({record.type})
                 </span>
                 {record.required && !record.verified && (
-                  <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
+                  <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-600">
                     Required
                   </span>
                 )}
@@ -197,7 +197,7 @@ export function DomainsPage() {
               <span
                 className={`rounded-full px-2 py-0.5 text-xs ${
                   record.verified
-                    ? "bg-emerald-500/10 text-emerald-400"
+                    ? "bg-emerald-500/10 text-emerald-600"
                     : "bg-slate-500/10 text-slate-400"
                 }`}
               >
@@ -211,7 +211,7 @@ export function DomainsPage() {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <p className="text-slate-500">
                   Host (DNS panel):{" "}
-                  <span className="font-mono text-slate-300">
+                  <span className="font-mono text-slate-700">
                     {record.host_label ?? record.host}
                   </span>
                 </p>
@@ -224,7 +224,7 @@ export function DomainsPage() {
                       setNotice,
                     )
                   }
-                  className="text-indigo-400 hover:underline"
+                  className="text-indigo-600 hover:underline"
                 >
                   Copy host
                 </button>
@@ -234,13 +234,13 @@ export function DomainsPage() {
               </p>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <p className="break-all text-slate-500">
-                  Value: <span className="font-mono text-slate-300">{record.value}</span>
+                  Value: <span className="font-mono text-slate-700">{record.value}</span>
                 </p>
                 {record.value && (
                   <button
                     type="button"
                     onClick={() => copyText(record.value, "Value", setNotice)}
-                    className="shrink-0 text-indigo-400 hover:underline"
+                    className="shrink-0 text-indigo-600 hover:underline"
                   >
                     Copy value
                   </button>
@@ -256,12 +256,12 @@ export function DomainsPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
       {notice && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700">
           {notice}
         </div>
       )}
@@ -270,23 +270,23 @@ export function DomainsPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <Card>
             <p className="text-sm text-slate-400">Total Domains</p>
-            <p className="mt-2 text-3xl font-bold text-white">{stats.total}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{stats.total}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Verified</p>
-            <p className="mt-2 text-3xl font-bold text-emerald-400">{stats.verified}</p>
+            <p className="mt-2 text-3xl font-bold text-emerald-600">{stats.verified}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Pending</p>
-            <p className="mt-2 text-3xl font-bold text-amber-400">{stats.pending}</p>
+            <p className="mt-2 text-3xl font-bold text-amber-600">{stats.pending}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Failed</p>
-            <p className="mt-2 text-3xl font-bold text-red-400">{stats.failed}</p>
+            <p className="mt-2 text-3xl font-bold text-red-600">{stats.failed}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Default Set</p>
-            <p className="mt-2 text-3xl font-bold text-indigo-400">
+            <p className="mt-2 text-3xl font-bold text-indigo-600">
               {stats.default_configured ? "Yes" : "No"}
             </p>
           </Card>
@@ -300,7 +300,7 @@ export function DomainsPage() {
             placeholder="Search domains..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+            className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
           />
           <Button onClick={() => setShowForm((open) => !open)}>
             {showForm ? "Close" : "+ Add Domain"}
@@ -315,9 +315,9 @@ export function DomainsPage() {
         {showForm && (
           <form
             onSubmit={handleCreate}
-            className="mb-6 rounded-lg border border-slate-700 bg-slate-900/50 p-4"
+            className="mb-6 rounded-lg border border-slate-300 bg-slate-50 p-4"
           >
-            <h3 className="mb-4 text-sm font-semibold text-white">Add Sending Domain</h3>
+            <h3 className="mb-4 text-sm font-semibold text-slate-900">Add Sending Domain</h3>
             <Input
               label="Domain"
               required
@@ -344,7 +344,7 @@ export function DomainsPage() {
           </p>
         ) : (
           <div className="space-y-4">
-            <label className="flex items-center gap-2 text-sm text-slate-300">
+            <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
                 aria-label="Select all domains"
@@ -360,7 +360,7 @@ export function DomainsPage() {
             {domains.map((domain) => (
               <div
                 key={domain.id}
-                className="rounded-lg border border-slate-800 bg-slate-900/40 p-4"
+                className="rounded-lg border border-slate-200 bg-slate-50 p-4"
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -377,14 +377,14 @@ export function DomainsPage() {
                           )
                         }
                       />
-                      <h3 className="text-base font-semibold text-white">{domain.domain}</h3>
+                      <h3 className="text-base font-semibold text-slate-900">{domain.domain}</h3>
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColors[domain.status]}`}
                       >
                         {domain.status}
                       </span>
                       {domain.is_default && (
-                        <span className="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-400">
+                        <span className="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-600">
                           Default
                         </span>
                       )}
@@ -406,7 +406,7 @@ export function DomainsPage() {
                       onClick={() =>
                         setExpandedId(expandedId === domain.id ? null : domain.id)
                       }
-                      className="text-xs text-indigo-400 hover:underline"
+                      className="text-xs text-indigo-600 hover:underline"
                     >
                       {expandedId === domain.id ? "Hide DNS" : "Show DNS"}
                     </button>
@@ -414,7 +414,7 @@ export function DomainsPage() {
                       type="button"
                       onClick={() => handleVerify(domain.id)}
                       disabled={verifyingId === domain.id}
-                      className="text-xs text-indigo-400 hover:underline disabled:opacity-50"
+                      className="text-xs text-indigo-600 hover:underline disabled:opacity-50"
                     >
                       {verifyingId === domain.id ? "Verifying..." : "Verify"}
                     </button>
@@ -437,7 +437,7 @@ export function DomainsPage() {
                     <button
                       type="button"
                       onClick={() => handleDelete(domain.id)}
-                      className="text-xs text-red-400 hover:underline"
+                      className="text-xs text-red-600 hover:underline"
                     >
                       Delete
                     </button>

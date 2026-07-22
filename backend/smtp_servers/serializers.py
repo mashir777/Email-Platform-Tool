@@ -15,6 +15,7 @@ class SmtpServerSerializer(serializers.ModelSerializer):
             "encryption",
             "from_email",
             "from_name",
+            "reply_to_email",
             "is_active",
             "is_default",
             "verify_ssl",
@@ -23,6 +24,12 @@ class SmtpServerSerializer(serializers.ModelSerializer):
             "imap_port",
             "hourly_limit",
             "daily_limit",
+            "warmup_enabled",
+            "warmup_start_daily",
+            "warmup_target_daily",
+            "warmup_increase_daily",
+            "warmup_current_daily",
+            "warmup_started_at",
             "last_tested_at",
             "last_test_success",
             "last_test_message",
@@ -31,6 +38,8 @@ class SmtpServerSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
+            "warmup_current_daily",
+            "warmup_started_at",
             "last_tested_at",
             "last_test_success",
             "last_test_message",
@@ -51,6 +60,7 @@ class SmtpServerCreateSerializer(serializers.Serializer):
     )
     from_email = serializers.EmailField()
     from_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    reply_to_email = serializers.EmailField(required=False, allow_blank=True, default="")
     is_active = serializers.BooleanField(default=True)
     is_default = serializers.BooleanField(default=False)
     verify_ssl = serializers.BooleanField(default=False)
@@ -59,6 +69,10 @@ class SmtpServerCreateSerializer(serializers.Serializer):
     imap_port = serializers.IntegerField(min_value=1, max_value=65535, default=993)
     hourly_limit = serializers.IntegerField(min_value=1, default=100)
     daily_limit = serializers.IntegerField(min_value=1, default=1000)
+    warmup_enabled = serializers.BooleanField(default=False)
+    warmup_start_daily = serializers.IntegerField(min_value=1, default=5)
+    warmup_target_daily = serializers.IntegerField(min_value=1, default=40)
+    warmup_increase_daily = serializers.IntegerField(min_value=1, default=5)
 
 
 class SmtpServerUpdateSerializer(serializers.Serializer):
@@ -73,6 +87,7 @@ class SmtpServerUpdateSerializer(serializers.Serializer):
     )
     from_email = serializers.EmailField(required=False)
     from_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    reply_to_email = serializers.EmailField(required=False, allow_blank=True)
     is_active = serializers.BooleanField(required=False)
     is_default = serializers.BooleanField(required=False)
     verify_ssl = serializers.BooleanField(required=False)
@@ -81,6 +96,10 @@ class SmtpServerUpdateSerializer(serializers.Serializer):
     imap_port = serializers.IntegerField(min_value=1, max_value=65535, required=False)
     hourly_limit = serializers.IntegerField(min_value=1, required=False)
     daily_limit = serializers.IntegerField(min_value=1, required=False)
+    warmup_enabled = serializers.BooleanField(required=False)
+    warmup_start_daily = serializers.IntegerField(min_value=1, required=False)
+    warmup_target_daily = serializers.IntegerField(min_value=1, required=False)
+    warmup_increase_daily = serializers.IntegerField(min_value=1, required=False)
 
 
 class SmtpStatsSerializer(serializers.Serializer):

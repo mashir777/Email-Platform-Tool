@@ -9,8 +9,9 @@ const variants = {
   primary:
     "bg-indigo-600 text-white hover:bg-indigo-500 focus:ring-indigo-500/50 disabled:bg-indigo-600/50",
   secondary:
-    "bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700 focus:ring-slate-500/50",
-  ghost: "text-slate-300 hover:bg-slate-800 hover:text-white focus:ring-slate-500/50",
+    "bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 focus:ring-slate-400/40 dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700 dark:hover:bg-slate-700",
+  ghost:
+    "text-slate-700 hover:bg-slate-100 hover:text-slate-900 focus:ring-slate-400/40 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white",
   danger: "bg-red-600 text-white hover:bg-red-500 focus:ring-red-500/50",
 };
 
