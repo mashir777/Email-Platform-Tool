@@ -22,6 +22,7 @@ export interface Campaign {
     id: string;
     name: string;
     subscriber_count?: number;
+    waiting_emails?: number;
   } | null;
   message_version: {
     id: string;

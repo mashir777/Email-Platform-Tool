@@ -43,6 +43,7 @@ export function SenderPage() {
   const [servers, setServers] = useState<SmtpServer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
@@ -65,18 +66,57 @@ export function SenderPage() {
     load();
   }, [load]);
 
-  async function handleAdd(e: FormEvent) {
+  function openAdd() {
+    setEditingId(null);
+    setForm(emptyForm);
+    setShowAdd(true);
+    setError("");
+    setNotice("");
+  }
+
+  function openEdit(server: SmtpServer) {
+    setEditingId(server.id);
+    setForm({
+      name: server.name,
+      host: server.host,
+      port: String(server.port),
+      username: server.username,
+      password: "",
+      encryption: server.encryption,
+      from_email: server.from_email,
+      from_name: server.from_name,
+      reply_to_email: server.reply_to_email ?? "",
+      is_active: server.is_active,
+      is_default: server.is_default,
+      hourly_limit: String(server.hourly_limit),
+      daily_limit: String(server.daily_limit),
+      verify_ssl: server.verify_ssl,
+      save_copy_to_sent: server.save_copy_to_sent ?? true,
+      imap_host: server.imap_host ?? "",
+      imap_port: String(server.imap_port ?? 993),
+    });
+    setShowAdd(true);
+    setError("");
+    setNotice("");
+  }
+
+  function closeForm() {
+    setShowAdd(false);
+    setEditingId(null);
+    setForm(emptyForm);
+  }
+
+  async function handleSave(e: FormEvent) {
     e.preventDefault();
     setIsSaving(true);
     setError("");
     setNotice("");
     try {
-      await smtpApi.createSmtpServer({
+      const payload = {
         name: form.name.trim(),
         host: form.host.trim(),
         port: Number(form.port) || 587,
         username: form.username.trim(),
-        password: form.password,
         encryption: form.encryption,
         from_email: form.from_email.trim(),
         from_name: form.from_name.trim(),
@@ -89,13 +129,29 @@ export function SenderPage() {
         save_copy_to_sent: form.save_copy_to_sent,
         imap_host: form.imap_host.trim(),
         imap_port: Number(form.imap_port) || 993,
-      });
-      setNotice(`Sender ${form.from_email} added.`);
-      setForm(emptyForm);
-      setShowAdd(false);
+        ...(form.password ? { password: form.password } : {}),
+      };
+      if (editingId) {
+        await smtpApi.updateSmtpServer(editingId, payload);
+        setNotice(`Sender ${form.from_email} updated.`);
+      } else {
+        if (!form.password) {
+          setError("Password is required for a new sender.");
+          return;
+        }
+        await smtpApi.createSmtpServer({ ...payload, password: form.password });
+        setNotice(`Sender ${form.from_email} added.`);
+      }
+      closeForm();
       await load();
     } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : "Could not add sender");
+      setError(
+        err instanceof ApiClientError
+          ? err.message
+          : editingId
+            ? "Could not update sender"
+            : "Could not add sender",
+      );
     } finally {
       setIsSaving(false);
     }
@@ -108,6 +164,7 @@ export function SenderPage() {
     try {
       await smtpApi.deleteSmtpServer(id);
       setNotice(`Sender ${email} deleted.`);
+      if (editingId === id) closeForm();
       await load();
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Could not delete sender");
@@ -131,14 +188,21 @@ export function SenderPage() {
         <p className="text-sm text-slate-500">
           Same SMTP fields as SMTP page — add From addresses for campaigns.
         </p>
-        <Button type="button" variant="ghost" onClick={() => setShowAdd((v) => !v)}>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => (showAdd ? closeForm() : openAdd())}
+        >
           {showAdd ? "Cancel" : "+ Add Sender"}
         </Button>
       </div>
 
       {showAdd && (
-        <Card title="Add Sender" description="Same fields as SMTP (without warmup)">
-          <form onSubmit={handleAdd} className="grid gap-3 sm:grid-cols-2">
+        <Card
+          title={editingId ? "Edit Sender" : "Add Sender"}
+          description="Same fields as SMTP (without warmup)"
+        >
+          <form onSubmit={handleSave} className="grid gap-3 sm:grid-cols-2">
             <Input
               label="Server name"
               required
@@ -186,9 +250,9 @@ export function SenderPage() {
               onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
             />
             <Input
-              label="Password"
+              label={editingId ? "Password (leave blank to keep)" : "Password"}
               type="password"
-              required
+              required={!editingId}
               value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
             />
@@ -293,7 +357,7 @@ export function SenderPage() {
             </label>
             <div className="sm:col-span-2">
               <Button type="submit" isLoading={isSaving}>
-                Save sender
+                {editingId ? "Update sender" : "Save sender"}
               </Button>
             </div>
           </form>
@@ -326,13 +390,18 @@ export function SenderPage() {
                     {server.is_active ? " · Active" : " · Inactive"}
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => handleDelete(server.id, server.from_email)}
-                >
-                  Delete
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button type="button" variant="ghost" onClick={() => openEdit(server)}>
+                    Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => handleDelete(server.id, server.from_email)}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>

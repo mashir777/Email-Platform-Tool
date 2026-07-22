@@ -18,6 +18,7 @@ const statusColors: Record<string, string> = {
   draft: "text-slate-400 bg-slate-400/10",
   scheduled: "text-indigo-600 bg-indigo-400/10",
   sending: "text-amber-600 bg-amber-400/10",
+  waiting: "text-amber-700 bg-amber-400/10",
   sent: "text-emerald-600 bg-emerald-400/10",
   paused: "text-yellow-600 bg-yellow-400/10",
   cancelled: "text-red-600 bg-red-400/10",
@@ -1631,18 +1632,33 @@ export function CampaignsPage() {
                       )}
                     </td>
                     <td className="py-3 pr-4">
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColors[c.status]}`}
-                      >
-                        {c.status}
-                      </span>
-                      {c.status === "sending" && (
-                        <p className="mt-1 text-xs text-amber-700">
-                          {sendProgress?.campaignId === c.id
-                            ? `Next mail in ${sendProgress.nextInSeconds}s`
-                            : "Sending in background…"}
-                        </p>
-                      )}
+                      {(() => {
+                        const hasActiveTimer =
+                          sendProgress?.campaignId === c.id &&
+                          sendProgress.pending > 0 &&
+                          pausedCampaignId !== c.id;
+                        const listWaiting = c.subscriber_list?.waiting_emails ?? 0;
+                        const showAsWaiting =
+                          c.status === "paused" ||
+                          (c.status === "sending" && !hasActiveTimer) ||
+                          (c.status === "sent" && listWaiting > 0);
+                        const label = showAsWaiting ? "Waiting" : c.status;
+                        const colorKey = showAsWaiting ? "waiting" : c.status;
+                        return (
+                          <>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColors[colorKey]}`}
+                            >
+                              {label}
+                            </span>
+                            {c.status === "sending" && hasActiveTimer && (
+                              <p className="mt-1 text-xs text-amber-700">
+                                Next mail in {sendProgress.nextInSeconds}s
+                              </p>
+                            )}
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="py-3 pr-4 text-slate-400">
                       {c.recipient_count ||
@@ -1714,6 +1730,13 @@ export function CampaignsPage() {
                             </button>
                             <button
                               type="button"
+                              onClick={() => handleEditCopy(c.id)}
+                              className="text-xs text-indigo-600 hover:underline"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
                               onClick={() => handleStopSending(c.id)}
                               className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-500"
                             >
@@ -1737,6 +1760,13 @@ export function CampaignsPage() {
                               className="text-xs text-indigo-600 hover:underline"
                             >
                               Tracking
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleEditCopy(c.id)}
+                              className="text-xs text-indigo-600 hover:underline"
+                            >
+                              Edit
                             </button>
                             <button
                               type="button"
