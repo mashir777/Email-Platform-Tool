@@ -12,6 +12,9 @@ export interface Campaign {
   subject: string;
   from_name: string;
   from_email: string;
+  smtp_server_ids: string[];
+  /** Emails per sender before rotating. null = unlimited (first sender only). */
+  emails_per_sender: number | null;
   html_content: string;
   text_content: string;
   status: CampaignStatus;
@@ -19,6 +22,7 @@ export interface Campaign {
     id: string;
     name: string;
     subscriber_count?: number;
+    waiting_emails?: number;
   } | null;
   message_version: {
     id: string;

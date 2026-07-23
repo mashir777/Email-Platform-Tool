@@ -21,6 +21,7 @@ class UserSerializer(serializers.ModelSerializer):
             "phone",
             "company_name",
             "timezone",
+            "default_reply_to",
             "avatar",
             "avatar_url",
             "is_verified",
@@ -157,7 +158,11 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
             "phone",
             "company_name",
             "timezone",
+            "default_reply_to",
         )
+        extra_kwargs = {
+            "default_reply_to": {"required": False, "allow_blank": True},
+        }
 
 
 class AvatarUploadSerializer(serializers.Serializer):

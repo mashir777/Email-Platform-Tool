@@ -32,6 +32,7 @@ class CustomUserAdmin(UserAdmin):
                     "phone",
                     "company_name",
                     "timezone",
+                    "default_reply_to",
                     "avatar",
                     "is_verified",
                     "created_at",

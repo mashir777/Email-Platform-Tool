@@ -71,6 +71,7 @@ def process_email_queue_item(self, queue_item_id: str):
             "campaign",
             "subscriber",
             "smtp_server",
+            "smtp_server__owner",
         ).get(pk=queue_item_id)
     except EmailQueueItem.DoesNotExist:
         return {"ok": False, "reason": "not_found"}
@@ -131,11 +132,25 @@ def dispatch_campaign(self, campaign_id: str):
             }
         requeued = 0
     elif campaign.status == Campaign.Status.PAUSED:
-        # Stop → Resume: cancel old timers, then continue PENDING only (no resend).
+        # Stop → Resume: cancel old timers, continue PENDING; if none, next batch.
         bump_queue_run_generation()
         campaign.status = Campaign.Status.SENDING
         campaign.save(update_fields=["status", "updated_at"])
         requeued = 0
+        if not get_pending_queue_item_ids(campaign.id):
+            from sending.services import (
+                extend_campaign_for_send,
+                finalize_campaign_if_complete,
+            )
+
+            pending_added = extend_campaign_for_send(campaign=campaign)
+            if pending_added == 0:
+                finalize_campaign_if_complete(campaign=campaign)
+                return {
+                    "ok": True,
+                    "reason": "no_new_recipients",
+                    "campaign_id": campaign_id,
+                }
     elif campaign.status == Campaign.Status.SENDING:
         # Already sending — do not requeue/reset; just continue the pending cycle.
         bump_queue_run_generation()

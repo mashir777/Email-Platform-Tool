@@ -25,6 +25,8 @@ export async function createCampaign(data: {
   text_content?: string;
   subscriber_list_id?: string;
   message_version_id?: string | null;
+  smtp_server_ids?: string[];
+  emails_per_sender?: number | null;
 }): Promise<{ campaign: Campaign }> {
   return apiV1Request("/campaigns/", {
     method: "POST",
@@ -43,6 +45,8 @@ export async function updateCampaign(
     text_content: string;
     subscriber_list_id: string | null;
     message_version_id: string | null;
+    smtp_server_ids: string[];
+    emails_per_sender: number | null;
   }>,
 ): Promise<{ campaign: Campaign }> {
   return apiV1Request(`/campaigns/${id}/`, {

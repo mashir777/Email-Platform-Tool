@@ -31,6 +31,13 @@ class SmtpServer(models.Model):
     )
     from_email = models.EmailField()
     from_name = models.CharField(max_length=255, blank=True)
+    reply_to_email = models.EmailField(
+        blank=True,
+        help_text=_(
+            "Optional Reply-To for this sender. "
+            "If blank, uses account default_reply_to, else the From address.",
+        ),
+    )
     is_active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
     verify_ssl = models.BooleanField(
@@ -52,6 +59,22 @@ class SmtpServer(models.Model):
     imap_port = models.PositiveIntegerField(default=993)
     hourly_limit = models.PositiveIntegerField(default=100)
     daily_limit = models.PositiveIntegerField(default=1000)
+    # Simple warmup ramp (not Instantly network) — gradually raise effective daily sends.
+    warmup_enabled = models.BooleanField(
+        default=False,
+        help_text=_("When on, daily sends ramp from start to target instead of full daily_limit."),
+    )
+    warmup_start_daily = models.PositiveIntegerField(default=5)
+    warmup_target_daily = models.PositiveIntegerField(default=40)
+    warmup_increase_daily = models.PositiveIntegerField(
+        default=5,
+        help_text=_("How many emails to add to the warmup cap each day."),
+    )
+    warmup_current_daily = models.PositiveIntegerField(
+        default=0,
+        help_text=_("Current effective daily cap while warming up. 0 = use start."),
+    )
+    warmup_started_at = models.DateTimeField(null=True, blank=True)
     last_tested_at = models.DateTimeField(null=True, blank=True)
     last_test_success = models.BooleanField(null=True, blank=True)
     last_test_message = models.CharField(max_length=500, blank=True)

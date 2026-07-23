@@ -11,7 +11,7 @@ const pageMeta: Record<string, { title: string; subtitle?: string }> = {
     subtitle: "Overview of your email marketing platform",
   },
   "/subscribers": {
-    title: "Emails",
+    title: "Lists",
     subtitle: "Manage your email lists",
   },
   "/messages": {
@@ -21,6 +21,14 @@ const pageMeta: Record<string, { title: string; subtitle?: string }> = {
   "/campaigns": {
     title: "Campaigns",
     subtitle: "Create and manage email campaigns",
+  },
+  "/unibox": {
+    title: "Inbox",
+    subtitle: "Replies from all sending mailboxes in one place",
+  },
+  "/warmup": {
+    title: "Warmup",
+    subtitle: "Add mailboxes and ramp daily sending gradually",
   },
   "/tracking": {
     title: "Tracking",
@@ -33,6 +41,10 @@ const pageMeta: Record<string, { title: string; subtitle?: string }> = {
   "/domains": {
     title: "Domains",
     subtitle: "Manage sending domains and DNS verification",
+  },
+  "/sender": {
+    title: "Sender",
+    subtitle: "Add and manage From addresses for campaigns",
   },
   "/reports": {
     title: "Reports",
@@ -50,7 +62,7 @@ export function AdminLayout() {
   const meta = pageMeta[location.pathname] ?? { title: "Email Platform" };
 
   return (
-    <div className="flex min-h-screen bg-slate-950 text-slate-100">
+    <div className="flex min-h-screen bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <div className="hidden md:flex md:shrink-0">
         <Sidebar />
       </div>
@@ -59,7 +71,7 @@ export function AdminLayout() {
         <div className="fixed inset-0 z-40 md:hidden">
           <button
             type="button"
-            className="absolute inset-0 bg-black/60"
+            className="absolute inset-0 bg-black/40"
             onClick={() => setSidebarOpen(false)}
             aria-label="Close menu overlay"
           />

@@ -72,7 +72,7 @@ export function ReportsPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
@@ -81,25 +81,25 @@ export function ReportsPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Card>
             <p className="text-sm text-slate-400">Emails Sent</p>
-            <p className="mt-2 text-3xl font-bold text-white">{overview.sent}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{overview.sent}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Open Rate</p>
-            <p className="mt-2 text-3xl font-bold text-emerald-400">
+            <p className="mt-2 text-3xl font-bold text-emerald-600">
               {formatRate(overview.open_rate)}
             </p>
             <p className="mt-1 text-xs text-slate-500">{overview.opened} opens</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Click Rate</p>
-            <p className="mt-2 text-3xl font-bold text-indigo-400">
+            <p className="mt-2 text-3xl font-bold text-indigo-600">
               {formatRate(overview.click_rate)}
             </p>
             <p className="mt-1 text-xs text-slate-500">{overview.clicked} clicks</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Bounce Rate</p>
-            <p className="mt-2 text-3xl font-bold text-red-400">
+            <p className="mt-2 text-3xl font-bold text-red-600">
               {formatRate(overview.bounce_rate)}
             </p>
             <p className="mt-1 text-xs text-slate-500">{overview.bounced} bounces</p>
@@ -123,7 +123,7 @@ export function ReportsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-500">
+                <tr className="border-b border-slate-200 text-slate-500">
                   <th className="pb-3 pr-4 font-medium">Date</th>
                   <th className="pb-3 pr-4 font-medium">Sent Emails</th>
                   <th className="pb-3 pr-4 font-medium">Opened Emails</th>
@@ -134,19 +134,19 @@ export function ReportsPage() {
               </thead>
               <tbody>
                 {daily.days.map((row) => (
-                  <tr key={row.date} className="border-b border-slate-800/60">
-                    <td className="py-3 pr-4 font-medium text-slate-200">
+                  <tr key={row.date} className="border-b border-slate-200/60">
+                    <td className="py-3 pr-4 font-medium text-slate-800">
                       {formatDisplayDate(row.date)}
                     </td>
-                    <td className="py-3 pr-4 text-slate-300">{row.sent}</td>
-                    <td className="py-3 pr-4 text-emerald-400">{row.opened}</td>
-                    <td className="py-3 pr-4 text-amber-300">{row.waiting}</td>
+                    <td className="py-3 pr-4 text-slate-700">{row.sent}</td>
+                    <td className="py-3 pr-4 text-emerald-600">{row.opened}</td>
+                    <td className="py-3 pr-4 text-amber-700">{row.waiting}</td>
                     <td className="py-3 pr-4 text-slate-400">{formatRate(row.open_rate)}</td>
                     <td className="py-3 text-right">
                       <button
                         type="button"
                         onClick={() => void openDayDetail(row.date)}
-                        className="text-xs text-indigo-400 hover:underline"
+                        className="text-xs text-indigo-600 hover:underline"
                       >
                         View list
                       </button>
@@ -171,7 +171,7 @@ export function ReportsPage() {
                 setSelectedDay(null);
                 setDayDetail(null);
               }}
-              className="text-xs text-slate-400 hover:text-white"
+              className="text-xs text-slate-400 hover:text-slate-900"
             >
               Close
             </button>
@@ -189,7 +189,7 @@ export function ReportsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead>
-                    <tr className="border-b border-slate-800 text-slate-500">
+                    <tr className="border-b border-slate-200 text-slate-500">
                       <th className="pb-3 pr-4 font-medium">Email</th>
                       <th className="pb-3 pr-4 font-medium">Campaign</th>
                       <th className="pb-3 font-medium">Status</th>
@@ -197,14 +197,14 @@ export function ReportsPage() {
                   </thead>
                   <tbody>
                     {dayDetail.emails.map((row) => (
-                      <tr key={row.queue_item_id} className="border-b border-slate-800/60">
-                        <td className="py-3 pr-4 text-slate-200">{row.email}</td>
+                      <tr key={row.queue_item_id} className="border-b border-slate-200/60">
+                        <td className="py-3 pr-4 text-slate-800">{row.email}</td>
                         <td className="py-3 pr-4 text-slate-400">{row.campaign_name}</td>
                         <td className="py-3">
                           {row.opened ? (
-                            <span className="text-emerald-400">Opened</span>
+                            <span className="text-emerald-600">Opened</span>
                           ) : (
-                            <span className="text-amber-300">Waiting</span>
+                            <span className="text-amber-700">Waiting</span>
                           )}
                         </td>
                       </tr>
@@ -224,7 +224,7 @@ export function ReportsPage() {
             placeholder="Search campaigns..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 sm:max-w-md"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 sm:max-w-md"
           />
         </div>
 
@@ -240,7 +240,7 @@ export function ReportsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-500">
+                <tr className="border-b border-slate-200 text-slate-500">
                   <th className="pb-3 pr-4 font-medium">Campaign</th>
                   <th className="pb-3 pr-4 font-medium">Status</th>
                   <th className="pb-3 pr-4 font-medium">Sent</th>
@@ -252,17 +252,17 @@ export function ReportsPage() {
               </thead>
               <tbody>
                 {reports.map((report) => (
-                  <tr key={report.campaign_id} className="border-b border-slate-800/60">
+                  <tr key={report.campaign_id} className="border-b border-slate-200/60">
                     <td className="py-3 pr-4">
-                      <div className="font-medium text-slate-200">{report.campaign_name}</div>
+                      <div className="font-medium text-slate-800">{report.campaign_name}</div>
                       <div className="text-xs text-slate-500">{report.subject || "—"}</div>
                     </td>
                     <td className="py-3 pr-4 capitalize text-slate-400">{report.status}</td>
                     <td className="py-3 pr-4 text-slate-400">{report.sent}</td>
-                    <td className="py-3 pr-4 text-emerald-400">{report.opened}</td>
-                    <td className="py-3 pr-4 text-indigo-400">{report.clicked}</td>
-                    <td className="py-3 pr-4 text-red-400">{report.bounced}</td>
-                    <td className="py-3 text-slate-300">{formatRate(report.open_rate)}</td>
+                    <td className="py-3 pr-4 text-emerald-600">{report.opened}</td>
+                    <td className="py-3 pr-4 text-indigo-600">{report.clicked}</td>
+                    <td className="py-3 pr-4 text-red-600">{report.bounced}</td>
+                    <td className="py-3 text-slate-700">{formatRate(report.open_rate)}</td>
                   </tr>
                 ))}
               </tbody>

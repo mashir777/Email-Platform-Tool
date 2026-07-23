@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 
 function AuthLoading() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950">
+    <div className="flex min-h-screen items-center justify-center bg-white dark:bg-slate-950">
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500/30 border-t-indigo-500" />
     </div>
   );

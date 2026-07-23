@@ -9,17 +9,19 @@ import { ApiClientError } from "@/api/client";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import type { SmtpServer } from "@/types/smtp";
 import type { Campaign, CampaignStats } from "@/types/campaigns";
 import type { MessagePurpose } from "@/types/messages";
 import type { Subscriber, SubscriberList } from "@/types/subscribers";
 
 const statusColors: Record<string, string> = {
   draft: "text-slate-400 bg-slate-400/10",
-  scheduled: "text-indigo-400 bg-indigo-400/10",
-  sending: "text-amber-400 bg-amber-400/10",
-  sent: "text-emerald-400 bg-emerald-400/10",
-  paused: "text-yellow-400 bg-yellow-400/10",
-  cancelled: "text-red-400 bg-red-400/10",
+  scheduled: "text-indigo-600 bg-indigo-400/10",
+  sending: "text-amber-600 bg-amber-400/10",
+  waiting: "text-amber-700 bg-amber-400/10",
+  sent: "text-emerald-600 bg-emerald-400/10",
+  paused: "text-yellow-600 bg-yellow-400/10",
+  cancelled: "text-red-600 bg-red-400/10",
 };
 
 const emptyForm = {
@@ -37,6 +39,9 @@ David Wilson<br>
 Datrix World | datrixworld.com`,
   subscriber_list_id: "",
   message_version_id: "",
+  smtp_server_ids: [] as string[],
+  /** UI string: positive integer (e.g. 20) */
+  emails_per_sender: "1",
 };
 
 function simplifySmtpError(error: string): string {
@@ -153,7 +158,7 @@ export function CampaignsPage() {
   const [isSending, setIsSending] = useState(false);
   const [defaultFromEmail, setDefaultFromEmail] = useState("");
   const [defaultSmtpId, setDefaultSmtpId] = useState<string | null>(null);
-  const [fromEmailOptions, setFromEmailOptions] = useState<string[]>([]);
+  const [smtpServers, setSmtpServers] = useState<SmtpServer[]>([]);
   const [listRecipients, setListRecipients] = useState<Subscriber[]>([]);
   const [isLoadingRecipients, setIsLoadingRecipients] = useState(false);
   const [testEmail, setTestEmail] = useState("");
@@ -178,6 +183,7 @@ export function CampaignsPage() {
   const pollSendProgressRef = useRef<(() => void) | null>(null);
   const lastSentCountRef = useRef<Record<string, number>>({});
   const sendProgressRef = useRef(sendProgress);
+  const pausedCampaignIdRef = useRef<string | null>(null);
   useEffect(() => {
     sendProgressRef.current = sendProgress;
   }, [sendProgress]);
@@ -186,6 +192,9 @@ export function CampaignsPage() {
     campaigns.find((campaign) => campaign.status === "sending")?.id ?? null;
   const pausedCampaignId =
     campaigns.find((campaign) => campaign.status === "paused")?.id ?? null;
+  useEffect(() => {
+    pausedCampaignIdRef.current = pausedCampaignId;
+  }, [pausedCampaignId]);
 
   const selectedList = lists.find((l) => l.id === form.subscriber_list_id);
   const recipientCount = selectedList?.subscriber_count ?? 0;
@@ -201,13 +210,53 @@ export function CampaignsPage() {
     return defaultFromEmail;
   }
 
+  function orderedSelectedSmtpIds(selectedIds: string[]): string[] {
+    // Top-to-bottom on the Senders list (first checked row sends first).
+    return smtpServers.filter((s) => selectedIds.includes(s.id)).map((s) => s.id);
+  }
+
+  function parseEmailsPerSender(raw: string): number | "invalid" {
+    const value = raw.trim().toLowerCase();
+    if (!value || value === "unlimited") return "invalid";
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 1) return "invalid";
+    return n;
+  }
+
   function buildCampaignPayload() {
+    const selectedIds = orderedSelectedSmtpIds(form.smtp_server_ids);
+    const firstSelected = smtpServers.find((s) => selectedIds.includes(s.id));
+    const emailsPerSender = parseEmailsPerSender(form.emails_per_sender);
     return {
-      ...form,
-      from_email: resolveFromEmail(form.from_email),
+      name: form.name,
+      subject: form.subject,
+      html_content: form.html_content,
+      from_email: resolveFromEmail(
+        firstSelected?.from_email || form.from_email || defaultFromEmail,
+      ),
+      from_name: firstSelected?.from_name || form.from_name,
       subscriber_list_id: form.subscriber_list_id,
       message_version_id: form.message_version_id || null,
+      smtp_server_ids: selectedIds,
+      emails_per_sender: emailsPerSender === "invalid" ? 1 : emailsPerSender,
     };
+  }
+
+  function toggleSmtpServer(id: string) {
+    setForm((f) => {
+      const exists = f.smtp_server_ids.includes(id);
+      const rawIds = exists
+        ? f.smtp_server_ids.filter((x) => x !== id)
+        : [...f.smtp_server_ids, id];
+      const smtp_server_ids = orderedSelectedSmtpIds(rawIds);
+      const first = smtpServers.find((s) => smtp_server_ids.includes(s.id));
+      return {
+        ...f,
+        smtp_server_ids,
+        from_email: first?.from_email || f.from_email,
+        from_name: first?.from_name || f.from_name,
+      };
+    });
   }
 
   const reloadLists = useCallback(async () => {
@@ -269,7 +318,11 @@ export function CampaignsPage() {
         result.tracking.campaign_name ||
         campaigns.find((c) => c.id === id)?.name ||
         "Campaign";
-      applySendSummaryToProgress(id, campaignName, result.send_summary);
+      // Only refresh the send timer from tracking when mail is still queued.
+      // Do not clear an active countdown when opening tracking on a finished campaign.
+      if ((result.send_summary?.pending ?? 0) > 0) {
+        applySendSummaryToProgress(id, campaignName, result.send_summary);
+      }
     } catch (err) {
       if (showSpinner) {
         setError(err instanceof ApiClientError ? err.message : "Could not load tracking");
@@ -290,13 +343,9 @@ export function CampaignsPage() {
 
   useEffect(() => {
     if (!activeSendingId) {
-      setSendProgress((current) => {
-        if (!current) return null;
-        const campaign = campaigns.find((c) => c.id === current.campaignId);
-        // Keep frozen timer while paused so Stop → Resume can repeat anytime.
-        if (campaign?.status === "paused" && current.pending > 0) return current;
-        return null;
-      });
+      // Do not wipe an active local timer just because campaigns list
+      // has not flipped to "sending" yet (race after Send click).
+      // Poll / applySendSummaryToProgress clears it when pending hits 0.
       return;
     }
 
@@ -328,15 +377,25 @@ export function CampaignsPage() {
         nextInSeconds: resumeSeconds,
       };
     });
+  }, [activeSendingId, sendDelaySeconds]);
+
+  // Poll queue + keep countdown while sendProgress has pending emails.
+  useEffect(() => {
+    if (!sendProgress || sendProgress.pending <= 0) {
+      pollSendProgressRef.current = null;
+      return;
+    }
+    const campaignId = sendProgress.campaignId;
+    const campaignName = sendProgress.campaignName;
 
     const poll = () => {
       void loadData({ silent: true });
       void campaignsApi
-        .fetchCampaignDeliveryStatus(activeSendingId)
+        .fetchCampaignDeliveryStatus(campaignId)
         .then((result) => {
           applySendSummaryToProgress(
-            activeSendingId,
-            sendingName,
+            campaignId,
+            campaignName,
             result.send_summary,
           );
         })
@@ -347,19 +406,20 @@ export function CampaignsPage() {
     poll();
     const intervalId = window.setInterval(poll, 2000);
     return () => {
-      pollSendProgressRef.current = null;
+      if (pollSendProgressRef.current === poll) {
+        pollSendProgressRef.current = null;
+      }
       window.clearInterval(intervalId);
     };
-    // Intentionally omit `campaigns` — polling must not restart the timer every 2s.
-  }, [activeSendingId, loadData, sendDelaySeconds]);
+  }, [sendProgress?.campaignId, sendProgress?.pending, loadData]);
 
   // Local countdown (e.g. 60→59→58→0); restarts when the next email is sent.
+  // Always-on tick: only mutates state when a send is in progress (avoids effect churn).
   useEffect(() => {
-    if (!sendProgress || sendProgress.pending <= 0) return;
-    if (pausedCampaignId === sendProgress.campaignId) return;
     const tick = window.setInterval(() => {
       setSendProgress((current) => {
         if (!current || current.pending <= 0) return current;
+        if (pausedCampaignIdRef.current === current.campaignId) return current;
         if (current.nextInSeconds <= 0) {
           pollSendProgressRef.current?.();
           return current;
@@ -372,7 +432,7 @@ export function CampaignsPage() {
       });
     }, 1000);
     return () => window.clearInterval(tick);
-  }, [sendProgress?.campaignId, sendProgress?.pending, pausedCampaignId]);
+  }, []);
 
   useEffect(() => {
     void loadDefaultSmtp();
@@ -412,15 +472,12 @@ export function CampaignsPage() {
       const active = servers.filter((server) => server.is_active);
       const defaultServer =
         active.find((server) => server.is_default) ?? active[0];
-      const fromEmails = [
-        ...new Set(active.map((s) => s.from_email).filter(Boolean)),
-      ];
-      setFromEmailOptions(fromEmails);
-      setDefaultFromEmail(defaultServer?.from_email ?? fromEmails[0] ?? "");
+      setSmtpServers(active);
+      setDefaultFromEmail(defaultServer?.from_email ?? "");
       setDefaultSmtpId(defaultServer?.id ?? null);
-      return defaultServer;
+      return { defaultServer: defaultServer ?? null, active };
     } catch {
-      return null;
+      return { defaultServer: null, active: [] as SmtpServer[] };
     }
   }
 
@@ -431,9 +488,9 @@ export function CampaignsPage() {
     // hourly_limit such that 3600/hourly ≈ delay (backend also enforces min 60s)
     const hourly = Math.max(1, Math.floor(3600 / delay));
     if (!defaultSmtpId) {
-      const server = await loadDefaultSmtp();
-      if (!server?.id) return delay;
-      await smtpApi.updateSmtpServer(server.id, { hourly_limit: hourly });
+      const { defaultServer } = await loadDefaultSmtp();
+      if (!defaultServer?.id) return delay;
+      await smtpApi.updateSmtpServer(defaultServer.id, { hourly_limit: hourly });
       return delay;
     }
     try {
@@ -458,7 +515,8 @@ export function CampaignsPage() {
     if (!summary) return;
     const pending = summary.pending ?? 0;
     if (pending > 0) {
-      const interval = summary.send_interval_seconds ?? sendDelaySeconds;
+      // Prefer the Wait-between value the user set in the UI.
+      const interval = sendDelaySeconds || summary.send_interval_seconds || 60;
       setSendProgress((current) => {
         const same = current?.campaignId === campaignId;
         const prevSent = lastSentCountRef.current[campaignId] ?? current?.sent ?? 0;
@@ -470,25 +528,22 @@ export function CampaignsPage() {
             ? stoppedAtSecondsRef.current.nextInSeconds
             : null;
 
-        const cycleSeconds = current?.intervalSeconds ?? interval;
-        let nextIn = cycleSeconds;
+        let nextIn = interval;
 
         if (emailJustSent) {
-          // Full campaign delay restarts right after each send.
           nextIn = interval;
           if (stoppedAtSecondsRef.current?.campaignId === campaignId) {
             stoppedAtSecondsRef.current = null;
           }
           clearStoppedAt(campaignId);
         } else if (stoppedAt != null) {
-          // Stop → Resume: keep counting from where the user stopped.
           if (same && (current?.nextInSeconds ?? 0) > 0) {
             nextIn = current!.nextInSeconds;
           } else {
             nextIn = stoppedAt;
           }
         } else if (same && (current?.nextInSeconds ?? 0) > 0) {
-          // Local 1s tick owns the countdown — ignore backend drift while ticking.
+          // Local 1s tick owns the countdown.
           nextIn = current!.nextInSeconds;
         } else if ((summary.next_send_in_seconds ?? 0) > 0) {
           nextIn = summary.next_send_in_seconds!;
@@ -506,7 +561,6 @@ export function CampaignsPage() {
         };
       });
     } else {
-      // Queue empty — email(s) sent, hide the timer.
       clearStoppedAt(campaignId);
       if (stoppedAtSecondsRef.current?.campaignId === campaignId) {
         stoppedAtSecondsRef.current = null;
@@ -518,45 +572,59 @@ export function CampaignsPage() {
   }
 
   async function openCreate() {
-    const [latestLists, defaultServer] = await Promise.all([
+    const [latestLists, smtpResult] = await Promise.all([
       reloadLists(),
       loadDefaultSmtp(),
       reloadMessages(),
     ]);
+    const { defaultServer, active } = smtpResult;
+    const selectedIds = active.map((s) => s.id);
+    const first = active.find((s) => s.id === defaultServer?.id) ?? active[0];
     setEditingId(null);
     setForm({
       ...emptyForm,
       subscriber_list_id: latestLists[0]?.id ?? "",
       message_version_id: "",
-      from_email: defaultServer?.from_email ?? "",
-      from_name: defaultServer?.from_name ?? "",
+      from_email: first?.from_email ?? defaultServer?.from_email ?? "",
+      from_name: first?.from_name ?? defaultServer?.from_name ?? "",
+      smtp_server_ids: selectedIds,
+      emails_per_sender: "1",
     });
     setShowForm(true);
     setError("");
   }
 
   async function openEdit(campaign: Campaign) {
-    const [latestLists, defaultServer] = await Promise.all([
+    const [latestLists, smtpResult] = await Promise.all([
       reloadLists(),
       loadDefaultSmtp(),
       reloadMessages(),
     ]);
+    const { defaultServer, active } = smtpResult;
     const smtpDomain = defaultServer?.from_email?.split("@")[1] ?? "";
     const campaignDomain = campaign.from_email?.split("@")[1] ?? "";
     const fromEmailMismatch = Boolean(
       smtpDomain && campaignDomain && smtpDomain !== campaignDomain,
     );
+    const savedIds = (campaign.smtp_server_ids || []).filter((id) =>
+      active.some((s) => s.id === id),
+    );
+    const selectedIds = savedIds.length > 0 ? savedIds : active.map((s) => s.id);
+    const first =
+      active.find((s) => selectedIds.includes(s.id)) ?? defaultServer;
     setEditingId(campaign.id);
     setForm({
       name: campaign.name,
       subject: campaign.subject,
-      from_name: campaign.from_name || defaultServer?.from_name || "",
+      from_name: campaign.from_name || first?.from_name || "",
       from_email: fromEmailMismatch
         ? defaultServer?.from_email ?? campaign.from_email
-        : campaign.from_email || defaultServer?.from_email || "",
+        : campaign.from_email || first?.from_email || "",
       html_content: campaign.html_content || emptyForm.html_content,
       subscriber_list_id: campaign.subscriber_list?.id ?? latestLists[0]?.id ?? "",
       message_version_id: campaign.message_version?.id ?? "",
+      smtp_server_ids: selectedIds,
+      emails_per_sender: String(campaign.emails_per_sender || 1),
     });
     if (fromEmailMismatch) {
       setNotice(`From email updated to ${defaultServer?.from_email} — Gmail cannot be used with your mail server.`);
@@ -569,6 +637,14 @@ export function CampaignsPage() {
     e.preventDefault();
     if (!form.subscriber_list_id) {
       setError("Please select an email list.");
+      return;
+    }
+    if (smtpServers.length > 0 && form.smtp_server_ids.length === 0) {
+      setError("Select at least one sender.");
+      return;
+    }
+    if (parseEmailsPerSender(form.emails_per_sender) === "invalid") {
+      setError("Emails per sender must be a number (e.g. 1, 20).");
       return;
     }
     const payload = buildCampaignPayload();
@@ -684,15 +760,26 @@ export function CampaignsPage() {
       setError("HTML content is required.");
       return false;
     }
+    if (smtpServers.length > 0 && form.smtp_server_ids.length === 0) {
+      setError("Select at least one sender.");
+      return false;
+    }
+    if (parseEmailsPerSender(form.emails_per_sender) === "invalid") {
+      setError("Emails per sender must be a number (e.g. 1, 20).");
+      return false;
+    }
     try {
+      const payload = buildCampaignPayload();
       await campaignsApi.updateCampaign(id, {
-        name: form.name,
-        subject: form.subject,
-        from_name: form.from_name,
-        from_email: resolveFromEmail(form.from_email),
-        html_content: form.html_content,
-        subscriber_list_id: form.subscriber_list_id,
-        message_version_id: form.message_version_id || null,
+        name: payload.name,
+        subject: payload.subject,
+        from_name: payload.from_name,
+        from_email: payload.from_email,
+        html_content: payload.html_content,
+        subscriber_list_id: payload.subscriber_list_id,
+        message_version_id: payload.message_version_id,
+        smtp_server_ids: payload.smtp_server_ids,
+        emails_per_sender: payload.emails_per_sender,
       });
       return true;
     } catch (err) {
@@ -720,14 +807,15 @@ export function CampaignsPage() {
       clearStoppedAt(sentId);
       stoppedAtSecondsRef.current = null;
       const pending = result.send_summary?.pending ?? 0;
-      const interval =
-        result.send_summary?.send_interval_seconds ?? sendDelaySeconds;
-      if (pending > 0) {
+      const stillSending =
+        pending > 0 || result.campaign?.status === "sending";
+      const interval = sendDelaySeconds;
+      if (stillSending) {
         setSendProgress({
           campaignId: sentId,
           campaignName: form.name || "Campaign",
           sent: result.send_summary?.sent ?? 0,
-          pending,
+          pending: Math.max(pending, 1),
           intervalSeconds: interval,
           nextInSeconds: interval,
         });
@@ -816,14 +904,15 @@ export function CampaignsPage() {
       setNotice(formatSendResult(result));
       // Show timer immediately after send/resume (before polls catch up).
       const pending = result.send_summary?.pending ?? 0;
-      const interval =
-        result.send_summary?.send_interval_seconds ?? sendDelaySeconds;
-      if (pending > 0) {
+      const stillSending =
+        pending > 0 || result.campaign?.status === "sending";
+      const interval = sendDelaySeconds;
+      if (stillSending) {
         setSendProgress({
           campaignId: id,
           campaignName: campaign.name,
           sent: result.send_summary?.sent ?? 0,
-          pending,
+          pending: Math.max(pending, 1),
           intervalSeconds: interval,
           nextInSeconds:
             resumeFromSeconds != null ? resumeFromSeconds : interval,
@@ -905,6 +994,14 @@ export function CampaignsPage() {
       );
       return;
     }
+    if (smtpServers.length > 0 && form.smtp_server_ids.length === 0) {
+      setError("Select at least one sender.");
+      return;
+    }
+    if (parseEmailsPerSender(form.emails_per_sender) === "invalid") {
+      setError("Emails per sender must be a number (e.g. 1, 20).");
+      return;
+    }
     setError("");
     setNotice("");
     setIsSending(true);
@@ -918,14 +1015,15 @@ export function CampaignsPage() {
       setEditingId(null);
       setNotice(formatSendResult(result));
       const pending = result.send_summary?.pending ?? 0;
-      const interval =
-        result.send_summary?.send_interval_seconds ?? sendDelaySeconds;
-      if (pending > 0) {
+      const stillSending =
+        pending > 0 || result.campaign?.status === "sending";
+      const interval = sendDelaySeconds;
+      if (stillSending) {
         setSendProgress({
           campaignId: created.campaign.id,
           campaignName: created.campaign.name,
           sent: result.send_summary?.sent ?? 0,
-          pending,
+          pending: Math.max(pending, 1),
           intervalSeconds: interval,
           nextInSeconds: interval,
         });
@@ -946,9 +1044,9 @@ export function CampaignsPage() {
   return (
     <div className="space-y-6">
       {!defaultFromEmail && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800">
           <p className="font-medium">Step 1: Add your domain sending email</p>
-          <p className="mt-1 text-xs text-amber-300/90">
+          <p className="mt-1 text-xs text-amber-700">
             Go to <strong>SMTP</strong> → Add server → set <strong>From email</strong> to your
             mailbox (e.g. info@datrixworld.com) → Test → Set default. Then create a campaign here.
           </p>
@@ -956,11 +1054,11 @@ export function CampaignsPage() {
       )}
 
       {defaultFromEmail && (
-        <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-200">
+        <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-800">
           <p className="font-medium">Domain → Gmail sending</p>
-          <p className="mt-1 text-xs text-indigo-300/90">
+          <p className="mt-1 text-xs text-indigo-700/90">
             <strong>From (sender):</strong>{" "}
-            <span className="font-mono text-indigo-100">{defaultFromEmail}</span> — your domain
+            <span className="font-mono text-indigo-900">{defaultFromEmail}</span> — your domain
             mailbox only, not @gmail.com.
             <br />
             <strong>To (emails):</strong> Pick an email list below. Emails send one by
@@ -970,23 +1068,23 @@ export function CampaignsPage() {
       )}
 
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
       {notice && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700">
           {notice}
         </div>
       )}
 
       {sendProgress && sendProgress.pending > 0 && (
-        <div className="fixed right-4 top-24 z-40 w-56 rounded-xl border border-amber-500/40 bg-slate-950/95 p-4 shadow-xl shadow-black/40">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-300">
+        <div className="fixed right-4 top-24 z-[60] w-56 rounded-xl border-2 border-amber-500 bg-white p-4 shadow-xl shadow-slate-200">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
             {pausedCampaignId === sendProgress.campaignId ? "Send timer (paused)" : "Send timer"}
           </p>
-          <p className="mt-1 truncate text-sm text-slate-300">{sendProgress.campaignName}</p>
-          <p className="mt-3 text-center text-5xl font-bold tabular-nums text-white">
+          <p className="mt-1 truncate text-sm text-slate-700">{sendProgress.campaignName}</p>
+          <p className="mt-3 text-center text-5xl font-bold tabular-nums text-slate-900">
             {sendProgress.nextInSeconds}
           </p>
           <p className="mt-1 text-center text-xs text-slate-400">
@@ -1009,7 +1107,7 @@ export function CampaignsPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
         <div>
           <label className="mb-1 block text-xs font-medium text-slate-400">
             Wait between each email (seconds)
@@ -1032,7 +1130,7 @@ export function CampaignsPage() {
                 Number.isFinite(value) ? value : sendDelaySeconds,
               );
             }}
-            className="w-32 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100"
+            className="w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
           />
         </div>
         <div>
@@ -1059,7 +1157,7 @@ export function CampaignsPage() {
                 : sendDelaySeconds;
               void applySendDelaySeconds(secs);
             }}
-            className="w-24 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100"
+            className="w-24 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
           />
         </div>
         <p className="pb-2 text-xs text-slate-500">
@@ -1071,19 +1169,19 @@ export function CampaignsPage() {
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <Card>
             <p className="text-sm text-slate-400">Total Campaigns</p>
-            <p className="mt-2 text-3xl font-bold text-white">{stats.total}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{stats.total}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Drafts</p>
-            <p className="mt-2 text-3xl font-bold text-slate-300">{stats.draft}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-700">{stats.draft}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Scheduled</p>
-            <p className="mt-2 text-3xl font-bold text-indigo-400">{stats.scheduled}</p>
+            <p className="mt-2 text-3xl font-bold text-indigo-600">{stats.scheduled}</p>
           </Card>
           <Card>
             <p className="text-sm text-slate-400">Sent</p>
-            <p className="mt-2 text-3xl font-bold text-emerald-400">{stats.sent}</p>
+            <p className="mt-2 text-3xl font-bold text-emerald-600">{stats.sent}</p>
           </Card>
         </div>
       )}
@@ -1095,7 +1193,7 @@ export function CampaignsPage() {
             placeholder="Search campaigns..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+            className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
           />
           <Button onClick={openCreate}>+ New Campaign</Button>
           {selectedCampaignIds.length > 0 && (
@@ -1106,9 +1204,9 @@ export function CampaignsPage() {
         </div>
 
         {!isLoading && campaigns.length > 0 && campaigns.every((c) => c.status === "sent") && (
-          <div className="mb-4 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-200">
+          <div className="mb-4 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-800">
             Your campaign was already sent. Click the green{" "}
-            <span className="font-semibold text-emerald-300">Send Again</span> button in the
+            <span className="font-semibold text-emerald-700">Send Again</span> button in the
             table to resend, or use <span className="font-semibold">+ New Campaign</span> above.
           </div>
         )}
@@ -1116,9 +1214,9 @@ export function CampaignsPage() {
         {showForm && (
           <form
             onSubmit={handleSubmit}
-            className="mb-6 rounded-lg border border-slate-700 bg-slate-900/50 p-4"
+            className="mb-6 rounded-lg border border-slate-300 bg-slate-50 p-4"
           >
-            <h3 className="mb-4 text-sm font-semibold text-white">
+            <h3 className="mb-4 text-sm font-semibold text-slate-900">
               {editingId ? "Edit Campaign" : "New Campaign"}
             </h3>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1133,47 +1231,82 @@ export function CampaignsPage() {
                 value={form.subject}
                 onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))}
               />
-              <Input
-                label="From name"
-                value={form.from_name}
-                onChange={(e) => setForm((f) => ({ ...f, from_name: e.target.value }))}
-              />
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">
-                  From email (sender) <span className="text-red-400">*</span>
-                </label>
-                {fromEmailOptions.length > 0 ? (
-                  <select
-                    required
-                    value={form.from_email || defaultFromEmail}
-                    onChange={(e) => setForm((f) => ({ ...f, from_email: e.target.value }))}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
-                  >
-                    {fromEmailOptions.map((email) => (
-                      <option key={email} value={email}>
-                        {email}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="email"
-                    required
-                    value={form.from_email}
-                    onChange={(e) => setForm((f) => ({ ...f, from_email: e.target.value }))}
-                    placeholder="info@yourdomain.com"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
-                  />
-                )}
-                {sendingDomain && (
-                  <p className="mt-1 text-xs text-slate-500">
-                    Must be @{sendingDomain} — configured on SMTP page. Recipients can be Gmail.
-                  </p>
-                )}
+              <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                From name: each selected sender uses its own name (from Sender page) —
+                e.g. Ava Jackson with ava@…, Mia Anderson with mia@….
               </div>
               <div className="sm:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">
-                  Email list <span className="text-red-400">*</span>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                  Senders <span className="text-red-600">*</span>
+                </label>
+                {smtpServers.length > 0 ? (
+                  <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-300 bg-white p-3">
+                    {smtpServers.map((server) => {
+                      const checked = form.smtp_server_ids.includes(server.id);
+                      return (
+                        <label
+                          key={server.id}
+                          className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={checked}
+                            onChange={() => toggleSmtpServer(server.id)}
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium text-slate-900">
+                              {server.from_email || server.name}
+                              {server.is_default ? (
+                                <span className="ml-2 text-xs font-normal text-slate-500">
+                                  default
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="block truncate text-xs text-slate-500">
+                              {server.from_name || server.name}
+                              {server.name && server.from_email
+                                ? ` · ${server.name}`
+                                : ""}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                    No active senders. Add SMTP senders on the Sender page.
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-slate-500">
+                  Selected senders are used in rotation.{" "}
+                  {form.smtp_server_ids.length} selected
+                  {sendingDomain ? ` · domain @${sendingDomain}` : ""}.
+                </p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                  Emails per sender
+                </label>
+                <input
+                  type="text"
+                  value={form.emails_per_sender}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, emails_per_sender: e.target.value }))
+                  }
+                  placeholder="20"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Upar wala sender pehle N list emails, phir next sender agli N. Har
+                  sender ek baar N → stop. Baqi Waiting pe Resume / Send Again se next
+                  batch.
+                </p>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                  Email list <span className="text-red-600">*</span>
                 </label>
                 {lists.length > 0 && (
                   <select
@@ -1182,7 +1315,7 @@ export function CampaignsPage() {
                     onChange={(e) =>
                       setForm((f) => ({ ...f, subscriber_list_id: e.target.value }))
                     }
-                    className="mb-3 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
+                    className="mb-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
                   >
                     <option value="">Select a list</option>
                     {lists.map((list) => (
@@ -1193,61 +1326,61 @@ export function CampaignsPage() {
                   </select>
                 )}
                 {lists.length === 0 && (
-                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
                     No email lists found. Create lists and add emails from the
                     Emails page.
                   </p>
                 )}
                 {form.subscriber_list_id && (
-                  <div className="mt-3 rounded-lg border border-slate-700 bg-slate-900/40 p-3">
-                    <p className="text-sm text-slate-300">
+                  <div className="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-3">
+                    <p className="text-sm text-slate-700">
                       Emails in list:{" "}
-                      <span className="text-slate-200">
+                      <span className="text-slate-800">
                         {selectedList?.total_emails ?? recipientCount} total
                       </span>
                       {" · "}
-                      <span className="text-emerald-400">
+                      <span className="text-emerald-600">
                         {selectedList?.sent_emails ?? 0} sent
                       </span>
                       {" · "}
-                      <span className="text-amber-300">
+                      <span className="text-amber-700">
                         {selectedList?.waiting_emails ?? deliverableCount} waiting
                       </span>
                       {fakeRecipientCount > 0 && (
-                        <span className="text-amber-400">
+                        <span className="text-amber-600">
                           {" "}
                           ({fakeRecipientCount} fake @example.com — will not receive mail)
                         </span>
                       )}
                     </p>
                     <p className="mt-2 text-xs text-slate-500">
-                      Send only queues <span className="text-amber-200">Waiting</span> emails.
+                      Send only queues <span className="text-amber-800">Waiting</span> emails.
                       Already sent addresses are skipped. Manage lists on the{" "}
                       <span className="text-slate-400">Emails</span> page.
                     </p>
                     {deliverableCount === 0 && (
-                      <p className="mt-2 text-xs text-amber-400">
+                      <p className="mt-2 text-xs text-amber-600">
                         This list has no sendable emails. Add real addresses on the Emails page.
                       </p>
                     )}
-                    <div className="mt-3 max-h-48 overflow-auto rounded-lg border border-slate-700/80">
+                    <div className="mt-3 max-h-48 overflow-auto rounded-lg border border-slate-200">
                       {isLoadingRecipients ? (
                         <p className="px-3 py-2 text-xs text-slate-500">Loading list emails…</p>
                       ) : listRecipients.length === 0 ? (
                         <p className="px-3 py-2 text-xs text-slate-500">No emails in this list.</p>
                       ) : (
-                        <ul className="divide-y divide-slate-800 text-sm">
+                        <ul className="divide-y divide-slate-200 text-sm">
                           {listRecipients.map((sub) => (
                             <li
                               key={sub.id}
                               className="flex items-center justify-between gap-3 px-3 py-2"
                             >
-                              <span className="truncate text-slate-200">{sub.email}</span>
+                              <span className="truncate text-slate-800">{sub.email}</span>
                               <span
                                 className={`shrink-0 text-xs ${
                                   sub.send_status === "sent"
-                                    ? "text-emerald-400"
-                                    : "text-amber-300"
+                                    ? "text-emerald-600"
+                                    : "text-amber-700"
                                 }`}
                               >
                                 {sub.send_status === "sent" ? "Sent" : "Waiting"}
@@ -1281,7 +1414,7 @@ export function CampaignsPage() {
                     onBlur={() => {
                       void applySendDelaySeconds(sendDelaySeconds);
                     }}
-                    className="w-24 rounded-lg border border-slate-700 bg-slate-900/80 px-2 py-1.5 text-sm text-slate-100"
+                    className="w-24 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900"
                   />
                 </label>
                 {editingId && (
@@ -1309,7 +1442,7 @@ export function CampaignsPage() {
                     className="mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3"
                   >
                     <div className="min-w-[220px] flex-1">
-                      <label className="mb-1 block text-xs font-medium text-indigo-200">
+                      <label className="mb-1 block text-xs font-medium text-indigo-800">
                         Send test email (before full campaign)
                       </label>
                       <input
@@ -1317,7 +1450,7 @@ export function CampaignsPage() {
                         value={testEmail}
                         onChange={(e) => setTestEmail(e.target.value)}
                         placeholder="yourname@gmail.com"
-                        className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
                       />
                     </div>
                     <Button type="submit" isLoading={isTestSending} className="shrink-0">
@@ -1327,7 +1460,7 @@ export function CampaignsPage() {
                 )}
               </div>
               <div className="sm:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
                   Attach message <span className="text-slate-500">(optional)</span>
                 </label>
                 <select
@@ -1350,7 +1483,7 @@ export function CampaignsPage() {
                         matched?.version.html_content?.trim() || current.html_content,
                     }));
                   }}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
                 >
                   <option value="">No message attached</option>
                   {messagePurposes.map((purpose) => (
@@ -1368,7 +1501,7 @@ export function CampaignsPage() {
                 </p>
               </div>
               <div className="sm:col-span-2">
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
                   HTML content
                 </label>
                 <textarea
@@ -1377,7 +1510,7 @@ export function CampaignsPage() {
                   onChange={(e) =>
                     setForm((f) => ({ ...f, html_content: e.target.value }))
                   }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
                   placeholder="Supports {{name}}, {{Company}}, {{Industrial Company}} from your CSV"
                 />
               </div>
@@ -1415,7 +1548,7 @@ export function CampaignsPage() {
             onSubmit={handleSchedule}
             className="mb-6 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-4"
           >
-            <h3 className="mb-3 text-sm font-semibold text-indigo-300">Schedule Campaign</h3>
+            <h3 className="mb-3 text-sm font-semibold text-indigo-700">Schedule Campaign</h3>
             <Input
               label="Send at"
               type="datetime-local"
@@ -1444,7 +1577,7 @@ export function CampaignsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-slate-500">
+                <tr className="border-b border-slate-200 text-slate-500">
                   <th className="pb-3 pr-3">
                     <input
                       type="checkbox"
@@ -1475,7 +1608,7 @@ export function CampaignsPage() {
               </thead>
               <tbody>
                 {campaigns.map((c) => (
-                  <tr key={c.id} className="border-b border-slate-800/60">
+                  <tr key={c.id} className="border-b border-slate-200/60">
                     <td className="py-3 pr-3">
                       <input
                         type="checkbox"
@@ -1491,26 +1624,41 @@ export function CampaignsPage() {
                         }
                       />
                     </td>
-                    <td className="py-3 pr-4 font-medium text-slate-200">{c.name}</td>
+                    <td className="py-3 pr-4 font-medium text-slate-800">{c.name}</td>
                     <td className="py-3 pr-4 text-slate-400">{c.subject || "—"}</td>
                     <td className="py-3 pr-4 text-slate-500">
                       {c.subscriber_list?.name ?? (
-                        <span className="text-amber-400">No list — edit to add</span>
+                        <span className="text-amber-600">No list — edit to add</span>
                       )}
                     </td>
                     <td className="py-3 pr-4">
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColors[c.status]}`}
-                      >
-                        {c.status}
-                      </span>
-                      {c.status === "sending" && (
-                        <p className="mt-1 text-xs text-amber-300">
-                          {sendProgress?.campaignId === c.id
-                            ? `Next mail in ${sendProgress.nextInSeconds}s`
-                            : "Sending in background…"}
-                        </p>
-                      )}
+                      {(() => {
+                        const hasActiveTimer =
+                          sendProgress?.campaignId === c.id &&
+                          sendProgress.pending > 0 &&
+                          pausedCampaignId !== c.id;
+                        const listWaiting = c.subscriber_list?.waiting_emails ?? 0;
+                        const showAsWaiting =
+                          c.status === "paused" ||
+                          (c.status === "sending" && !hasActiveTimer) ||
+                          (c.status === "sent" && listWaiting > 0);
+                        const label = showAsWaiting ? "Waiting" : c.status;
+                        const colorKey = showAsWaiting ? "waiting" : c.status;
+                        return (
+                          <>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColors[colorKey]}`}
+                            >
+                              {label}
+                            </span>
+                            {c.status === "sending" && hasActiveTimer && (
+                              <p className="mt-1 text-xs text-amber-700">
+                                Next mail in {sendProgress.nextInSeconds}s
+                              </p>
+                            )}
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="py-3 pr-4 text-slate-400">
                       {c.recipient_count ||
@@ -1524,7 +1672,7 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => openEdit(c)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Edit
                             </button>
@@ -1539,7 +1687,7 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => setScheduleId(c.id)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Schedule
                             </button>
@@ -1550,7 +1698,7 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => openEdit(c)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Edit
                             </button>
@@ -1565,7 +1713,7 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => handleCancel(c.id)}
-                              className="text-xs text-amber-400 hover:underline"
+                              className="text-xs text-amber-600 hover:underline"
                             >
                               Cancel
                             </button>
@@ -1576,9 +1724,16 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => openTracking(c.id)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Tracking
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleEditCopy(c.id)}
+                              className="text-xs text-indigo-600 hover:underline"
+                            >
+                              Edit
                             </button>
                             <button
                               type="button"
@@ -1587,6 +1742,14 @@ export function CampaignsPage() {
                             >
                               Stop
                             </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSend(c.id)}
+                              disabled={isSending}
+                              className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                            >
+                              Resume Send
+                            </button>
                           </>
                         )}
                         {c.status === "paused" && (
@@ -1594,9 +1757,16 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => openTracking(c.id)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Tracking
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleEditCopy(c.id)}
+                              className="text-xs text-indigo-600 hover:underline"
+                            >
+                              Edit
                             </button>
                             <button
                               type="button"
@@ -1613,14 +1783,14 @@ export function CampaignsPage() {
                             <button
                               type="button"
                               onClick={() => openTracking(c.id)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Tracking
                             </button>
                             <button
                               type="button"
                               onClick={() => handleEditCopy(c.id)}
-                              className="text-xs text-indigo-400 hover:underline"
+                              className="text-xs text-indigo-600 hover:underline"
                             >
                               Edit
                             </button>
@@ -1645,7 +1815,7 @@ export function CampaignsPage() {
                           <button
                             type="button"
                             onClick={() => handleDelete(c.id)}
-                            className="text-xs text-red-400 hover:underline"
+                            className="text-xs text-red-600 hover:underline"
                           >
                             Delete
                           </button>
@@ -1662,10 +1832,10 @@ export function CampaignsPage() {
 
       {trackingId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <div className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-xl border border-slate-300 bg-slate-50 shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <div>
-                <h3 className="text-lg font-semibold text-white">Email Tracking</h3>
+                <h3 className="text-lg font-semibold text-slate-900">Email Tracking</h3>
                 {trackingData && (
                   <p className="text-sm text-slate-400">
                     {trackingData.campaign_name} — {trackingData.opened}/{trackingData.delivered}{" "}
@@ -1676,7 +1846,7 @@ export function CampaignsPage() {
               <button
                 type="button"
                 onClick={() => trackingId && loadTracking(trackingId, true)}
-                className="mr-3 text-xs text-indigo-400 hover:underline"
+                className="mr-3 text-xs text-indigo-600 hover:underline"
               >
                 Refresh
               </button>
@@ -1686,7 +1856,7 @@ export function CampaignsPage() {
                   setTrackingId(null);
                   setTrackingData(null);
                 }}
-                className="text-slate-400 hover:text-white"
+                className="text-slate-400 hover:text-slate-900"
               >
                 Close
               </button>
@@ -1699,7 +1869,7 @@ export function CampaignsPage() {
                   <p className="mb-4 text-xs text-slate-500">{trackingData.note}</p>
                   <table className="w-full text-left text-sm">
                     <thead>
-                      <tr className="border-b border-slate-800 text-slate-500">
+                      <tr className="border-b border-slate-200 text-slate-500">
                         <th className="pb-2 pr-3 font-medium">Email</th>
                         <th className="pb-2 pr-3 font-medium">Sent Emails</th>
                         <th className="pb-2 font-medium">Opened Emails</th>
@@ -1713,25 +1883,27 @@ export function CampaignsPage() {
                             : row.queue_status === "failed"
                               ? "Fail"
                               : row.queue_status === "skipped"
-                                ? "Skipped"
+                                ? "Waiting"
                                 : row.queue_status === "sending"
                                   ? "Sending…"
-                                  : "Pending";
+                                  : row.queue_status === "pending"
+                                    ? "Waiting"
+                                    : "Waiting";
                         const sendClass =
                           row.queue_status === "sent"
-                            ? "text-emerald-400"
+                            ? "text-emerald-600"
                             : row.queue_status === "failed"
-                              ? "text-red-400"
+                              ? "text-red-600"
                               : row.queue_status === "sending"
-                                ? "text-amber-300"
-                                : "text-slate-400";
+                                ? "text-amber-700"
+                                : "text-amber-700";
                         return (
-                          <tr key={row.email} className="border-b border-slate-800/60">
-                            <td className="py-2 pr-3 text-slate-200">{row.email}</td>
+                          <tr key={row.email} className="border-b border-slate-200/60">
+                            <td className="py-2 pr-3 text-slate-800">{row.email}</td>
                             <td className={`py-2 pr-3 font-medium ${sendClass}`}>{sendLabel}</td>
                             <td className="py-2">
                               {row.opened ? (
-                                <span className="text-emerald-400">Yes</span>
+                                <span className="text-emerald-600">Yes</span>
                               ) : row.delivered ? (
                                 <span className="text-slate-400">No</span>
                               ) : (

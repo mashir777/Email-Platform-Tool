@@ -178,7 +178,7 @@ export function MessagesPage() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
@@ -210,7 +210,7 @@ export function MessagesPage() {
           </div>
 
           {showAddPurpose && (
-            <form onSubmit={handleCreatePurpose} className="mb-4 space-y-2 rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+            <form onSubmit={handleCreatePurpose} className="mb-4 space-y-2 rounded-lg border border-slate-300 bg-slate-50 p-3">
               <Input
                 label="Purpose name"
                 value={newPurposeName}
@@ -232,8 +232,8 @@ export function MessagesPage() {
           ) : purposes.length === 0 ? (
             <p className="py-8 text-center text-sm text-slate-500">No purposes yet.</p>
           ) : (
-            <div className="overflow-hidden rounded-lg border border-slate-800">
-              <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-2 text-sm text-slate-400">
+            <div className="overflow-hidden rounded-lg border border-slate-200">
+              <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-2 text-sm text-slate-400">
                 <input
                   type="checkbox"
                   aria-label="Select all purposes"
@@ -248,7 +248,7 @@ export function MessagesPage() {
                 />
                 <span>Select All</span>
               </div>
-              <ul className="divide-y divide-slate-800">
+              <ul className="divide-y divide-slate-200">
                 {purposes.map((purpose) => (
                   <li key={purpose.id} className="flex items-center">
                     <input
@@ -269,8 +269,8 @@ export function MessagesPage() {
                       onClick={() => selectPurpose(purpose.id)}
                       className={`min-w-0 flex-1 px-3 py-3 text-left text-sm transition ${
                         selectedPurposeId === purpose.id
-                          ? "bg-indigo-600/15 text-indigo-200"
-                          : "text-slate-300 hover:bg-slate-900"
+                          ? "bg-indigo-50 text-indigo-800"
+                          : "text-slate-700 hover:bg-slate-100"
                       }`}
                     >
                       <span className="block font-medium">{purpose.name}</span>
@@ -279,7 +279,7 @@ export function MessagesPage() {
                     <button
                       type="button"
                       onClick={() => void handleDeletePurpose(purpose.id, purpose.name)}
-                      className="mr-4 text-xs text-red-400 hover:text-red-300"
+                      className="mr-4 text-xs text-red-600 hover:text-red-700"
                     >
                       Delete
                     </button>
@@ -317,7 +317,7 @@ export function MessagesPage() {
                       className={`rounded-lg px-3 py-2 text-sm font-medium transition ${
                         isActive
                           ? "bg-indigo-600 text-white"
-                          : "border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                          : "border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100"
                       }`}
                     >
                       {key.toUpperCase()}
@@ -334,14 +334,14 @@ export function MessagesPage() {
               />
 
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-300">
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
                   {selectedVersionKey.toUpperCase()} HTML content
                 </label>
                 <textarea
                   rows={12}
                   value={draftHtml}
                   onChange={(event) => setDraftHtml(event.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
                   placeholder="Write the email message for this version. You can update it later."
                 />
                 <p className="mt-2 text-xs text-slate-500">

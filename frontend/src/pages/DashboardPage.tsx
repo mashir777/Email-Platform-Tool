@@ -32,7 +32,7 @@ export function DashboardPage() {
   return (
     <div className="space-y-6">
       <Card>
-        <h2 className="text-lg font-semibold text-white">{greeting}</h2>
+        <h2 className="text-lg font-semibold text-slate-900">{greeting}</h2>
         <p className="mt-1 text-sm text-slate-400">
           Your email marketing command center.
         </p>
@@ -42,7 +42,7 @@ export function DashboardPage() {
         {stats.map((stat) => (
           <Card key={stat.label}>
             <p className="text-sm text-slate-400">{stat.label}</p>
-            <p className="mt-2 text-3xl font-bold text-white">{stat.value}</p>
+            <p className="mt-2 text-3xl font-bold text-slate-900">{stat.value}</p>
             <p className="mt-1 text-xs text-slate-500">{stat.hint}</p>
           </Card>
         ))}
@@ -52,7 +52,7 @@ export function DashboardPage() {
         <Card title="Quick Actions" description="Shortcuts to key modules">
           <ul className="space-y-2 text-sm text-slate-400">
             <li>
-              • <Link to="/subscribers" className="text-indigo-400 hover:underline">Manage emails and lists</Link>
+              • <Link to="/subscribers" className="text-indigo-600 hover:underline">Manage emails and lists</Link>
             </li>
             <li>• Build and schedule campaigns</li>
             <li>• Configure SMTP and domains</li>
@@ -63,17 +63,17 @@ export function DashboardPage() {
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between gap-4">
               <dt className="text-slate-500">Email</dt>
-              <dd className="text-slate-200">{user?.email}</dd>
+              <dd className="text-slate-800">{user?.email}</dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-slate-500">Role</dt>
-              <dd className="capitalize text-slate-200">
+              <dd className="capitalize text-slate-800">
                 {user?.role.replace("_", " ")}
               </dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="text-slate-500">Company</dt>
-              <dd className="text-slate-200">{user?.company_name || "—"}</dd>
+              <dd className="text-slate-800">{user?.company_name || "—"}</dd>
             </div>
           </dl>
         </Card>

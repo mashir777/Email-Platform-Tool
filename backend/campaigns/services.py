@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from campaigns.models import Campaign
 from email_templates.models import MessageVersion
-from sending.services import get_default_smtp_server
+from sending.services import get_active_smtp_servers, get_default_smtp_server
 from subscribers.models import Subscriber, SubscriberList
 
 
@@ -25,6 +25,25 @@ def get_owner_campaign(user, campaign_id):
         id=campaign_id,
         owner=user,
     )
+
+
+def _normalize_smtp_server_ids(owner, raw_ids):
+    """Keep only active SMTP IDs owned by this user; store as strings."""
+    if raw_ids is None:
+        return None
+    if not raw_ids:
+        return []
+    allowed = {str(s.id) for s in get_active_smtp_servers(owner)}
+    normalized = []
+    for value in raw_ids:
+        sid = str(value)
+        if sid in allowed and sid not in normalized:
+            normalized.append(sid)
+    if not normalized:
+        raise ValidationError(
+            {"smtp_server_ids": ["Select at least one active sender."]},
+        )
+    return normalized
 
 
 def _validate_list_owner(subscriber_list, owner):
@@ -98,6 +117,12 @@ def create_campaign(*, owner, name, **fields):
     if fields.get("from_email"):
         _validate_from_email_for_owner(owner=owner, from_email=fields["from_email"])
 
+    if "smtp_server_ids" in fields:
+        fields["smtp_server_ids"] = _normalize_smtp_server_ids(
+            owner,
+            fields.get("smtp_server_ids"),
+        )
+
     return Campaign.objects.create(owner=owner, name=name, **fields)
 
 
@@ -126,6 +151,12 @@ def update_campaign(*, campaign, **validated_data):
         _validate_from_email_for_owner(
             owner=campaign.owner,
             from_email=validated_data["from_email"],
+        )
+
+    if "smtp_server_ids" in validated_data:
+        validated_data["smtp_server_ids"] = _normalize_smtp_server_ids(
+            campaign.owner,
+            validated_data.get("smtp_server_ids"),
         )
 
     for field, value in validated_data.items():
