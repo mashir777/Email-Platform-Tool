@@ -255,6 +255,38 @@ def get_owner_subscribers(user):
     return Subscriber.objects.filter(owner=user).prefetch_related("lists")
 
 
+def delete_orphan_subscribers(*, owner) -> int:
+    """Remove emails that are not on any list (keeps Total Emails accurate)."""
+    import time
+
+    from django.db.utils import OperationalError
+
+    deleted_total = 0
+    for attempt in range(1, 6):
+        try:
+            orphan_ids = list(
+                Subscriber.objects.filter(owner=owner)
+                .annotate(membership_count=Count("memberships"))
+                .filter(membership_count=0)
+                .values_list("id", flat=True)
+            )
+            if not orphan_ids:
+                return deleted_total
+            with transaction.atomic():
+                for start in range(0, len(orphan_ids), 400):
+                    chunk = orphan_ids[start : start + 400]
+                    deleted_total += Subscriber.objects.filter(
+                        owner=owner,
+                        id__in=chunk,
+                    ).delete()[0]
+            return deleted_total
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt >= 5:
+                raise
+            time.sleep(0.35 * attempt)
+    return deleted_total
+
+
 @transaction.atomic
 def create_list(*, owner, name, description="", source_filename=""):
     if SubscriberList.objects.filter(owner=owner, name=name).exists():
@@ -296,12 +328,6 @@ def delete_list(*, subscriber_list):
 
     owner = subscriber_list.owner
     list_id = subscriber_list.id
-    member_ids = list(
-        ListMembership.objects.filter(list_id=list_id).values_list(
-            "subscriber_id",
-            flat=True,
-        ),
-    )
 
     for attempt in range(1, 6):
         try:
@@ -317,20 +343,7 @@ def delete_list(*, subscriber_list):
     else:
         raise OperationalError("database is locked")
 
-    if not member_ids:
-        return
-
-    for attempt in range(1, 6):
-        try:
-            with transaction.atomic():
-                Subscriber.objects.filter(owner=owner, id__in=member_ids).annotate(
-                    membership_count=Count("memberships"),
-                ).filter(membership_count=0).delete()
-            break
-        except OperationalError as exc:
-            if "locked" not in str(exc).lower() or attempt >= 5:
-                raise
-            time.sleep(0.35 * attempt)
+    delete_orphan_subscribers(owner=owner)
 
 
 @transaction.atomic

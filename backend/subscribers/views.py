@@ -29,16 +29,34 @@ class SubscriberStatsView(APIView):
 
     @extend_schema(tags=["Subscribers"], summary="Get subscriber statistics")
     def get(self, request):
-        qs = services.get_owner_subscribers(request.user).filter(
-            memberships__isnull=False,
-        ).distinct()
+        from django.db.models import Count
+
+        lists_count = services.get_owner_lists(request.user).count()
+        if lists_count == 0:
+            # No lists left → Total Emails must be 0 (clear leftover orphan rows).
+            services.delete_orphan_subscribers(owner=request.user)
+            stats = {
+                "total": 0,
+                "subscribed": 0,
+                "unsubscribed": 0,
+                "bounced": 0,
+                "complained": 0,
+                "lists": 0,
+            }
+            return success_response(data={"stats": SubscriberStatsSerializer(stats).data})
+
+        qs = (
+            services.get_owner_subscribers(request.user)
+            .annotate(membership_count=Count("memberships"))
+            .filter(membership_count__gt=0)
+        )
         stats = {
             "total": qs.count(),
             "subscribed": qs.filter(status=Subscriber.Status.SUBSCRIBED).count(),
             "unsubscribed": qs.filter(status=Subscriber.Status.UNSUBSCRIBED).count(),
             "bounced": qs.filter(status=Subscriber.Status.BOUNCED).count(),
             "complained": qs.filter(status=Subscriber.Status.COMPLAINED).count(),
-            "lists": services.get_owner_lists(request.user).count(),
+            "lists": lists_count,
         }
         return success_response(data={"stats": SubscriberStatsSerializer(stats).data})
 

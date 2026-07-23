@@ -396,7 +396,10 @@ export function SubscribersPage() {
   async function handleDeleteAllLists() {
     if (!confirm("Delete all email lists?")) return;
     try {
-      await Promise.all(lists.map((list) => subscribersApi.deleteList(list.id)));
+      // Sequential deletes avoid SQLite "database is locked" on large lists.
+      for (const list of lists) {
+        await subscribersApi.deleteList(list.id);
+      }
       setSelectedListId("");
       setSubscribers([]);
       setNotice("All email lists deleted.");
@@ -410,7 +413,9 @@ export function SubscribersPage() {
   async function handleDeleteSelectedLists() {
     if (!selectedListIds.length || !confirm(`Delete ${selectedListIds.length} selected list(s)?`)) return;
     try {
-      await Promise.all(selectedListIds.map((id) => subscribersApi.deleteList(id)));
+      for (const id of selectedListIds) {
+        await subscribersApi.deleteList(id);
+      }
       if (selectedListIds.includes(selectedListId)) {
         setSelectedListId("");
         setSubscribers([]);
