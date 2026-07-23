@@ -104,11 +104,20 @@ function formatSendResult(result: {
 
 const SEND_DELAY_STORAGE_KEY = "campaign_send_delay_seconds";
 const STOPPED_AT_STORAGE_KEY = "campaign_send_stopped_at";
+const MIN_SEND_DELAY_SECONDS = 1;
+const MAX_SEND_DELAY_SECONDS = 3600;
+
+function clampSendDelaySeconds(seconds: number): number {
+  if (!Number.isFinite(seconds)) return 60;
+  return Math.min(
+    MAX_SEND_DELAY_SECONDS,
+    Math.max(MIN_SEND_DELAY_SECONDS, Math.round(seconds)),
+  );
+}
 
 function loadSendDelaySeconds(): number {
   const raw = Number(localStorage.getItem(SEND_DELAY_STORAGE_KEY) || "60");
-  if (!Number.isFinite(raw)) return 60;
-  return Math.min(900, Math.max(60, Math.round(raw)));
+  return clampSendDelaySeconds(raw);
 }
 
 function loadStoppedAt(campaignId: string): number | null {
@@ -202,12 +211,56 @@ export function CampaignsPage() {
   const fakeRecipientCount = Math.max(0, recipientCount - deliverableCount);
   const sendingDomain = defaultFromEmail.split("@")[1] ?? "";
 
+  const mergeFieldTokens = (() => {
+    const preferred = new Map<string, string>();
+    const add = (label: string) => {
+      const text = label.trim();
+      if (!text) return;
+      const norm = text
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_|_$/g, "");
+      if (!norm) return;
+      const existing = preferred.get(norm);
+      if (
+        !existing ||
+        (text.includes(" ") && !existing.includes(" ")) ||
+        (/[A-Z]/.test(text) && existing === norm)
+      ) {
+        preferred.set(norm, text);
+      }
+    };
+    ["name", "first_name", "last_name", "email", "company", "Industrial Company", "phone", "sender_name"].forEach(
+      add,
+    );
+    for (const sub of listRecipients) {
+      if (sub.first_name) add("first_name");
+      if (sub.last_name) add("last_name");
+      if (sub.company) add("company");
+      if (sub.industrial_company) add("Industrial Company");
+      if (sub.phone) add("phone");
+      Object.keys(sub.custom_fields || {}).forEach(add);
+    }
+    return [...preferred.values()].sort((a, b) => a.localeCompare(b));
+  })();
+
   function resolveFromEmail(email: string): string {
-    if (!defaultFromEmail) return email.trim();
-    const domain = defaultFromEmail.split("@")[1]?.toLowerCase();
-    const fromDomain = email.split("@")[1]?.toLowerCase();
-    if (!domain || fromDomain === domain) return email.trim();
-    return defaultFromEmail;
+    const trimmed = email.trim();
+    if (!trimmed) return defaultFromEmail || "";
+    const fromDomain = trimmed.split("@")[1]?.toLowerCase();
+    if (!fromDomain) return defaultFromEmail || trimmed;
+    const allowedDomains = new Set(
+      smtpServers
+        .map((server) => server.from_email?.split("@")[1]?.toLowerCase())
+        .filter((domain): domain is string => Boolean(domain)),
+    );
+    if (allowedDomains.size === 0) {
+      const defaultDomain = defaultFromEmail.split("@")[1]?.toLowerCase();
+      if (!defaultDomain || fromDomain === defaultDomain) return trimmed;
+      return defaultFromEmail;
+    }
+    if (allowedDomains.has(fromDomain)) return trimmed;
+    return defaultFromEmail || trimmed;
   }
 
   function orderedSelectedSmtpIds(selectedIds: string[]): string[] {
@@ -482,19 +535,23 @@ export function CampaignsPage() {
   }
 
   async function applySendDelaySeconds(seconds: number) {
-    const delay = Math.min(900, Math.max(60, Math.round(seconds) || 60));
+    const delay = clampSendDelaySeconds(seconds || 60);
     setSendDelaySeconds(delay);
     localStorage.setItem(SEND_DELAY_STORAGE_KEY, String(delay));
-    // hourly_limit such that 3600/hourly ≈ delay (backend also enforces min 60s)
+    // hourly_limit such that 3600/hourly ≈ delay
     const hourly = Math.max(1, Math.floor(3600 / delay));
-    if (!defaultSmtpId) {
-      const { defaultServer } = await loadDefaultSmtp();
-      if (!defaultServer?.id) return delay;
-      await smtpApi.updateSmtpServer(defaultServer.id, { hourly_limit: hourly });
-      return delay;
-    }
     try {
-      await smtpApi.updateSmtpServer(defaultSmtpId, { hourly_limit: hourly });
+      const { active } = await loadDefaultSmtp();
+      const targets = active.length
+        ? active
+        : defaultSmtpId
+          ? [{ id: defaultSmtpId } as SmtpServer]
+          : [];
+      await Promise.all(
+        targets.map((server) =>
+          smtpApi.updateSmtpServer(server.id, { hourly_limit: hourly }),
+        ),
+      );
     } catch {
       // Keep local delay even if SMTP update fails; queue still uses SMTP limits.
     }
@@ -601,10 +658,14 @@ export function CampaignsPage() {
       reloadMessages(),
     ]);
     const { defaultServer, active } = smtpResult;
-    const smtpDomain = defaultServer?.from_email?.split("@")[1] ?? "";
-    const campaignDomain = campaign.from_email?.split("@")[1] ?? "";
+    const campaignDomain = campaign.from_email?.split("@")[1]?.toLowerCase() ?? "";
+    const allowedDomains = new Set(
+      active
+        .map((server) => server.from_email?.split("@")[1]?.toLowerCase())
+        .filter((domain): domain is string => Boolean(domain)),
+    );
     const fromEmailMismatch = Boolean(
-      smtpDomain && campaignDomain && smtpDomain !== campaignDomain,
+      campaignDomain && allowedDomains.size > 0 && !allowedDomains.has(campaignDomain),
     );
     const savedIds = (campaign.smtp_server_ids || []).filter((id) =>
       active.some((s) => s.id === id),
@@ -618,7 +679,7 @@ export function CampaignsPage() {
       subject: campaign.subject,
       from_name: campaign.from_name || first?.from_name || "",
       from_email: fromEmailMismatch
-        ? defaultServer?.from_email ?? campaign.from_email
+        ? first?.from_email || defaultServer?.from_email || campaign.from_email
         : campaign.from_email || first?.from_email || "",
       html_content: campaign.html_content || emptyForm.html_content,
       subscriber_list_id: campaign.subscriber_list?.id ?? latestLists[0]?.id ?? "",
@@ -627,10 +688,35 @@ export function CampaignsPage() {
       emails_per_sender: String(campaign.emails_per_sender || 1),
     });
     if (fromEmailMismatch) {
-      setNotice(`From email updated to ${defaultServer?.from_email} — Gmail cannot be used with your mail server.`);
+      setNotice(
+        `From email updated to a mailbox on your sender list (Gmail / unknown domains cannot be used).`,
+      );
     }
     setShowForm(true);
     setError("");
+  }
+
+  async function handleSendTestEmail() {
+    if (!editingId) {
+      setError("Save/open the campaign first, then send a test email.");
+      return;
+    }
+    const email = testEmail.trim().toLowerCase();
+    if (!email || !email.includes("@") || !email.includes(".")) {
+      setError("Enter any real email (Gmail, Outlook, work, etc.).");
+      return;
+    }
+    setIsTestSending(true);
+    setError("");
+    setNotice("");
+    try {
+      await campaignsApi.sendCampaignTestEmail(editingId, email);
+      setNotice(`Test email sent to ${email}. Check inbox and spam folder.`);
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Test send failed");
+    } finally {
+      setIsTestSending(false);
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -1114,14 +1200,14 @@ export function CampaignsPage() {
           </label>
           <input
             type="number"
-            min={60}
-            max={900}
-            step={30}
+            min={MIN_SEND_DELAY_SECONDS}
+            max={MAX_SEND_DELAY_SECONDS}
+            step={1}
             value={sendDelaySeconds}
             onChange={(e) => {
               const value = Number(e.target.value);
               setSendDelaySeconds(
-                Number.isFinite(value) ? Math.min(900, Math.max(60, Math.round(value))) : 60,
+                Number.isFinite(value) ? clampSendDelaySeconds(value) : 60,
               );
             }}
             onBlur={(e) => {
@@ -1139,21 +1225,21 @@ export function CampaignsPage() {
           </label>
           <input
             type="number"
-            min={1}
-            max={15}
-            step={1}
-            value={Math.max(1, Math.round(sendDelaySeconds / 60))}
+            min={0.1}
+            max={60}
+            step={0.1}
+            value={Math.round((sendDelaySeconds / 60) * 10) / 10}
             onChange={(e) => {
               const minutes = Number(e.target.value);
               const secs = Number.isFinite(minutes)
-                ? Math.min(900, Math.max(60, Math.round(minutes) * 60))
+                ? clampSendDelaySeconds(minutes * 60)
                 : 60;
               setSendDelaySeconds(secs);
             }}
             onBlur={(e) => {
               const minutes = Number(e.target.value);
               const secs = Number.isFinite(minutes)
-                ? Math.min(900, Math.max(60, Math.round(minutes) * 60))
+                ? clampSendDelaySeconds(minutes * 60)
                 : sendDelaySeconds;
               void applySendDelaySeconds(secs);
             }}
@@ -1161,7 +1247,7 @@ export function CampaignsPage() {
           />
         </div>
         <p className="pb-2 text-xs text-slate-500">
-          Default 60s (1 min). Timer shows 60, 59, 58… then sends one email and restarts.
+          Custom delay (1–3600s). Timer counts down, sends one email, then restarts.
         </p>
       </div>
 
@@ -1399,16 +1485,14 @@ export function CampaignsPage() {
                   Wait between emails (seconds)
                   <input
                     type="number"
-                    min={60}
-                    max={900}
-                    step={30}
+                    min={MIN_SEND_DELAY_SECONDS}
+                    max={MAX_SEND_DELAY_SECONDS}
+                    step={1}
                     value={sendDelaySeconds}
                     onChange={(e) => {
                       const value = Number(e.target.value);
                       setSendDelaySeconds(
-                        Number.isFinite(value)
-                          ? Math.min(900, Math.max(60, Math.round(value)))
-                          : 60,
+                        Number.isFinite(value) ? clampSendDelaySeconds(value) : 60,
                       );
                     }}
                     onBlur={() => {
@@ -1418,29 +1502,7 @@ export function CampaignsPage() {
                   />
                 </label>
                 {editingId && (
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      const email = testEmail.trim().toLowerCase();
-                      if (!email || !email.includes("@")) {
-                        setError("Enter your Gmail for a test send.");
-                        return;
-                      }
-                      setIsTestSending(true);
-                      setError("");
-                      try {
-                        await campaignsApi.sendCampaignTestEmail(editingId, email);
-                        setNotice(`Test email sent to ${email}. Check inbox and spam folder.`);
-                      } catch (err) {
-                        setError(
-                          err instanceof ApiClientError ? err.message : "Test send failed",
-                        );
-                      } finally {
-                        setIsTestSending(false);
-                      }
-                    }}
-                    className="mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3"
-                  >
+                  <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3">
                     <div className="min-w-[220px] flex-1">
                       <label className="mb-1 block text-xs font-medium text-indigo-800">
                         Send test email (before full campaign)
@@ -1449,14 +1511,25 @@ export function CampaignsPage() {
                         type="email"
                         value={testEmail}
                         onChange={(e) => setTestEmail(e.target.value)}
-                        placeholder="yourname@gmail.com"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleSendTestEmail();
+                          }
+                        }}
+                        placeholder="any@gmail.com"
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
                       />
                     </div>
-                    <Button type="submit" isLoading={isTestSending} className="shrink-0">
+                    <Button
+                      type="button"
+                      isLoading={isTestSending}
+                      className="shrink-0"
+                      onClick={() => void handleSendTestEmail()}
+                    >
                       Send test
                     </Button>
-                  </form>
+                  </div>
                 )}
               </div>
               <div className="sm:col-span-2">
@@ -1511,8 +1584,32 @@ export function CampaignsPage() {
                     setForm((f) => ({ ...f, html_content: e.target.value }))
                   }
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none"
-                  placeholder="Supports {{name}}, {{Company}}, {{Industrial Company}} from your CSV"
+                  placeholder="Hi {{name}}, … use any CSV column like {{khush}} or {{Company}}"
                 />
+                <p className="mt-1 text-xs text-slate-500">
+                  CSV headers auto-fill per email. Use {"{{column}}"} — e.g. {"{{first_name}}"},{" "}
+                  {"{{Company}}"}, {"{{sender_name}}"} (signature = Sender page name).
+                </p>
+                {mergeFieldTokens.length > 0 && form.subscriber_list_id && (
+                  <p className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                    {mergeFieldTokens.map((token) => (
+                      <button
+                        key={token}
+                        type="button"
+                        className="rounded border border-slate-300 bg-white px-1.5 py-0.5 font-mono text-slate-700 hover:border-indigo-400 hover:text-indigo-700"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            html_content: `${f.html_content}{{${token}}}`,
+                          }))
+                        }
+                        title={`Insert {{${token}}}`}
+                      >
+                        {`{{${token}}}`}
+                      </button>
+                    ))}
+                  </p>
+                )}
               </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -1730,7 +1827,7 @@ export function CampaignsPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleEditCopy(c.id)}
+                              onClick={() => openEdit(c)}
                               className="text-xs text-indigo-600 hover:underline"
                             >
                               Edit
@@ -1763,7 +1860,7 @@ export function CampaignsPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleEditCopy(c.id)}
+                              onClick={() => openEdit(c)}
                               className="text-xs text-indigo-600 hover:underline"
                             >
                               Edit
@@ -1789,7 +1886,7 @@ export function CampaignsPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleEditCopy(c.id)}
+                              onClick={() => openEdit(c)}
                               className="text-xs text-indigo-600 hover:underline"
                             >
                               Edit

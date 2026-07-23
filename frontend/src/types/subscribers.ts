@@ -8,6 +8,8 @@ export interface SubscriberList {
   source_filename?: string;
   is_active: boolean;
   is_verified?: boolean;
+  csv_headers?: string[];
+  field_columns?: string[];
   subscriber_count: number;
   deliverable_count?: number;
   total_emails?: number;
@@ -26,6 +28,7 @@ export interface Subscriber {
   company?: string;
   industrial_company?: string;
   phone: string;
+  custom_fields?: Record<string, string>;
   status: SubscriberStatus;
   send_status?: EmailSendStatus;
   lists: SubscriberList[];

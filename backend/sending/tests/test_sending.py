@@ -177,6 +177,33 @@ class CampaignSendAPITestCase(APITestCase):
             "Hi Sam, Acme SaaS serves Software. Role: Founder, city: Lahore.",
         )
 
+    def test_personalize_sender_name_placeholder_and_hardcoded_swap(self):
+        message = "Best,\nDavid Wilson\nDatrix World\n— {{sender_name}}"
+        result = _personalize(
+            message,
+            self.subscriber,
+            sender_name="Ava Jackson",
+            sender_names_to_swap=["David Wilson", "Oliver Wilson", "Ava Jackson"],
+        )
+        self.assertEqual(
+            result,
+            "Best,\nAva Jackson\nDatrix World\n— Ava Jackson",
+        )
+
+    def test_personalize_rewrites_hardcoded_signature_from_sender_from_name(self):
+        html = (
+            "Just curious.<br><br> Best,<br> David Wilson<br> "
+            "Datrix World | datrixworld.com"
+        )
+        result = _personalize(
+            html,
+            self.subscriber,
+            sender_name="Chloe Clark",
+            sender_names_to_swap=["Ava Jackson", "Chloe Clark"],
+        )
+        self.assertIn("Best,<br> Chloe Clark<br>", result)
+        self.assertNotIn("David Wilson", result)
+
     def test_plain_text_message_is_formatted_as_readable_html(self):
         formatted = _format_html_message("Hi Sam,\n\nHow are you?\n\nBest,\nDavid")
         self.assertIn('data-email-body="true"', formatted)

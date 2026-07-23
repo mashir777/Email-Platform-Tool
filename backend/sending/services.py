@@ -25,7 +25,7 @@ from tracking.services import append_text_tracking_link, get_tracking_base_url, 
 
 logger = logging.getLogger(__name__)
 
-MIN_SEND_INTERVAL_SECONDS = 60
+MIN_SEND_INTERVAL_SECONDS = 1
 
 
 def _list_membership_added_at_by_subscriber(*, subscriber_list) -> dict:
@@ -102,7 +102,7 @@ def get_effective_daily_limit(smtp_server: SmtpServer) -> int:
 
 
 def compute_send_interval_seconds(smtp_server: SmtpServer) -> int:
-    """Seconds between consecutive sends based on hourly limit (minimum 60s)."""
+    """Seconds between consecutive sends based on hourly limit (customizable, min 1s)."""
     hourly = max(int(smtp_server.hourly_limit or 1), 1)
     return max(MIN_SEND_INTERVAL_SECONDS, 3600 // hourly)
 
@@ -349,51 +349,149 @@ def _skip_over_send_limit(
     )
 
 
-def _personalize(content: str, subscriber: Subscriber) -> str:
+def _rewrite_signature_sender_name(content: str, sender_display: str) -> str:
+    """
+    Put the active Sender-page From name on the signature line after Best,/Regards,.
+    Works even when the template still has a hardcoded name like \"David Wilson\".
+    """
+    sender_display = (sender_display or "").strip()
+    if not content or not sender_display:
+        return content
+
+    # Best, / Best regards, / Regards, / Thanks, then line break(s), then the name line.
+    pattern = re.compile(
+        r"(?P<prefix>"
+        r"(?:Best(?:\s+regards)?|Regards|Thanks|Thank you)\s*,?\s*"
+        r"(?:<br\s*/?>\s*|\r?\n\s*)+)"
+        r"(?P<name>[^\r\n<]{1,80}?)"
+        r"(?P<suffix>\s*(?:<br\s*/?>|\r?\n|$))",
+        re.IGNORECASE,
+    )
+
+    def _is_company_line(name: str) -> bool:
+        lowered = name.strip().lower()
+        if not lowered:
+            return True
+        if "datrix" in lowered or "http" in lowered or "www." in lowered:
+            return True
+        if "|" in name or "@" in name:
+            return True
+        return False
+
+    def repl(match: re.Match) -> str:
+        name = match.group("name").strip()
+        if _is_company_line(name):
+            return match.group(0)
+        if name.lower() == sender_display.lower():
+            return match.group(0)
+        return f"{match.group('prefix')}{sender_display}{match.group('suffix')}"
+
+    return pattern.sub(repl, content, count=1)
+
+
+def _personalize(
+    content: str,
+    subscriber: Subscriber | None,
+    *,
+    sender_name: str = "",
+    sender_email: str = "",
+    sender_names_to_swap: list[str] | None = None,
+) -> str:
     if not content:
         return ""
-    display_name = subscriber.full_name or subscriber.first_name or ""
-    company = getattr(subscriber, "company", "") or ""
-    industrial_company = getattr(subscriber, "industrial_company", "") or ""
 
     def normalize_key(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
 
-    fields = {
-        normalize_key(key): str(value or "")
-        for key, value in (subscriber.custom_fields or {}).items()
-    }
-    # Canonical subscriber fields win over CSV aliases when both exist.
-    fields["email"] = subscriber.email
-    canonical_fields = {
-        "name": display_name,
-        "first_name": subscriber.first_name or display_name,
-        "firstname": subscriber.first_name or display_name,
-        "last_name": subscriber.last_name or "",
-        "lastname": subscriber.last_name or "",
-        "full_name": display_name,
-        "fullname": display_name,
-        "company": company,
-        "company_name": company,
-        "industrial_company": industrial_company,
-        "industrialcompany": industrial_company,
-        "industry": industrial_company,
-        "phone": subscriber.phone or "",
-    }
-    for key, value in canonical_fields.items():
-        if value or key not in fields:
+    fields: dict[str, str] = {}
+    if subscriber is not None:
+        display_name = subscriber.full_name or subscriber.first_name or ""
+        company = getattr(subscriber, "company", "") or ""
+        industrial_company = getattr(subscriber, "industrial_company", "") or ""
+
+        for key, value in (subscriber.custom_fields or {}).items():
+            text = str(value or "")
+            raw = str(key or "").strip()
+            if not raw:
+                continue
+            fields[raw] = text
+            fields[raw.lower()] = text
+            norm = normalize_key(raw)
+            if norm:
+                fields[norm] = text
+
+        # Canonical subscriber fields win over CSV aliases when both exist.
+        fields["email"] = subscriber.email
+        canonical_fields = {
+            "name": display_name,
+            "first_name": subscriber.first_name or display_name,
+            "firstname": subscriber.first_name or display_name,
+            "last_name": subscriber.last_name or "",
+            "lastname": subscriber.last_name or "",
+            "full_name": display_name,
+            "fullname": display_name,
+            "company": company,
+            "company_name": company,
+            "industrial_company": industrial_company,
+            "industrialcompany": industrial_company,
+            "industry": industrial_company,
+            "phone": subscriber.phone or "",
+        }
+        for key, value in canonical_fields.items():
             fields[key] = value
+            fields[normalize_key(key)] = value
+
+    # SMTP sender display name (signature) — from Sender page "From name".
+    sender_display = (sender_name or "").strip()
+    sender_mail = (sender_email or "").strip()
+    sender_fields = {
+        "sender_name": sender_display,
+        "sender": sender_display,
+        "from_name": sender_display,
+        "Sender Name": sender_display,
+        "Sender": sender_display,
+        "sender_email": sender_mail,
+        "from_email": sender_mail,
+    }
+    for key, value in sender_fields.items():
+        fields[key] = value
+        fields[key.lower()] = value
+        fields[normalize_key(key)] = value
+        fields[key.replace("_", " ")] = value
 
     placeholder_pattern = re.compile(
         r"\{\{\s*([^{}]+?)\s*\}\}|\[([^\[\]]+?)\]",
     )
 
     def replace_placeholder(match):
-        raw_key = match.group(1) or match.group(2) or ""
+        raw_key = (match.group(1) or match.group(2) or "").strip()
+        if not raw_key:
+            return match.group(0)
+        if raw_key in fields:
+            return fields[raw_key]
+        lowered = raw_key.lower()
+        if lowered in fields:
+            return fields[lowered]
         normalized = normalize_key(raw_key)
-        return fields.get(normalized, match.group(0))
+        if normalized in fields:
+            return fields[normalized]
+        return match.group(0)
 
-    return placeholder_pattern.sub(replace_placeholder, content)
+    result = placeholder_pattern.sub(replace_placeholder, content)
+
+    # Hardcoded other-sender names → current SMTP From name.
+    if sender_display:
+        for other in sender_names_to_swap or []:
+            other = (other or "").strip()
+            if not other or other.lower() == sender_display.lower():
+                continue
+            if other in result:
+                result = result.replace(other, sender_display)
+
+        # Always rewrite the signature name line after Best,/Regards, from Sender From name.
+        result = _rewrite_signature_sender_name(result, sender_display)
+
+    return result
 
 
 def _format_html_message(content: str) -> str:
@@ -456,6 +554,7 @@ def send_message_via_smtp(
     text_content: str = "",
     from_email: str = "",
     from_name: str = "",
+    save_to_sent: bool = True,
 ):
     sender_email = (from_email or smtp_server.from_email or "").strip()
     sender_name = from_name or smtp_server.from_name
@@ -492,7 +591,8 @@ def send_message_via_smtp(
             raw = f"Reply-To: {reply_to}\r\n" + raw
         server.sendmail(envelope_from, [to_email], raw)
 
-    save_message_to_sent_folder(smtp_server=smtp_server, message=message)
+    if save_to_sent:
+        save_message_to_sent_folder(smtp_server=smtp_server, message=message)
 
 
 def send_message_via_django(
@@ -590,11 +690,53 @@ def _resolve_from_email(campaign: Campaign, smtp_server: SmtpServer | None) -> s
 
 def _resolve_from_name(campaign: Campaign, smtp_server: SmtpServer | None) -> str:
     # Prefer each SMTP sender's own display name (Ava / Mia / …).
-    if smtp_server and smtp_server.from_name:
-        return smtp_server.from_name
-    if campaign.from_name:
-        return campaign.from_name
+    if smtp_server:
+        name = (smtp_server.from_name or "").strip()
+        if name:
+            return name
+        label = (smtp_server.name or "").strip()
+        # Human Sender-page labels when from_name is empty.
+        if label and "@" not in label and (" " in label or label[:1].isupper()):
+            return label
+    if campaign and (campaign.from_name or "").strip():
+        return campaign.from_name.strip()
     return ""
+
+
+def _sender_display_names_for_swap(
+    *,
+    campaign: Campaign,
+    smtp_server: SmtpServer | None,
+) -> list[str]:
+    """All known sender display names so hardcoded signatures can be rewritten."""
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None):
+        text = (value or "").strip()
+        if len(text) < 2:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        names.append(text)
+
+    try:
+        for server in resolve_campaign_smtp_servers(campaign):
+            add(server.from_name)
+            if server.name and "@" not in server.name:
+                add(server.name)
+    except ValidationError:
+        pass
+    for server in get_active_smtp_servers(campaign.owner):
+        add(server.from_name)
+    add(getattr(campaign, "from_name", None))
+    if smtp_server:
+        add(smtp_server.from_name)
+    # Longest first so "David Wilson" wins over "David".
+    names.sort(key=len, reverse=True)
+    return names
 
 
 @transaction.atomic
@@ -993,44 +1135,79 @@ def extend_campaign_for_send(*, campaign: Campaign) -> int:
 
 
 def send_campaign_test_email(*, campaign: Campaign, to_email: str):
-    """Send one preview email immediately (not via the queue)."""
-    from campaigns.services import _validate_from_email_for_owner
-
-    to_email = to_email.strip().lower()
+    """Send one preview email immediately (not via the queue) to any real inbox."""
+    to_email = (to_email or "").strip().lower()
+    if not to_email or "@" not in to_email:
+        raise ValidationError({"to_email": ["Enter a valid email address."]})
     if is_undeliverable_email(to_email):
         raise ValidationError(
             {"to_email": ["Use a real email address (Gmail is OK), not @example.com."]},
         )
 
-    smtp_server = _validate_smtp_configured(campaign.owner)
+    servers = resolve_campaign_smtp_servers(campaign)
+    smtp_server = servers[0] if servers else _validate_smtp_configured(campaign.owner)
     from_email = _resolve_from_email(campaign, smtp_server)
     from_name = _resolve_from_name(campaign, smtp_server)
-    _validate_from_email_for_owner(owner=campaign.owner, from_email=from_email)
-
-    subscriber = (
-        campaign.subscriber_list.subscribers.filter(email=to_email).first()
-        if campaign.subscriber_list_id
-        else None
+    swap_names = _sender_display_names_for_swap(
+        campaign=campaign,
+        smtp_server=smtp_server,
     )
-    if subscriber:
-        html_content = _personalize(campaign.html_content, subscriber)
-        text_content = _personalize(campaign.text_content, subscriber)
-        subject = _personalize(campaign.subject, subscriber)
-    else:
-        html_content = campaign.html_content or ""
-        text_content = campaign.text_content or ""
+
+    subscriber = None
+    if campaign.subscriber_list_id:
+        subscriber = campaign.subscriber_list.subscribers.filter(email=to_email).first()
+        if subscriber is None:
+            recipients = _subscribed_recipients_in_list_order(campaign.subscriber_list)
+            subscriber = recipients[0] if recipients else None
+    html_content = _personalize(
+        campaign.html_content,
+        subscriber,
+        sender_name=from_name,
+        sender_email=from_email,
+        sender_names_to_swap=swap_names,
+    )
+    text_content = _personalize(
+        campaign.text_content,
+        subscriber,
+        sender_name=from_name,
+        sender_email=from_email,
+        sender_names_to_swap=swap_names,
+    )
+    subject = _personalize(
+        campaign.subject,
+        subscriber,
+        sender_name=from_name,
+        sender_email=from_email,
+        sender_names_to_swap=swap_names,
+    )
+    if not subject:
         subject = campaign.subject or campaign.name
     html_content = _format_html_message(html_content)
 
-    send_message_via_smtp(
-        smtp_server=smtp_server,
-        to_email=to_email,
-        subject=f"[Test] {subject}",
-        html_content=html_content,
-        text_content=text_content,
-        from_email=from_email,
-        from_name=from_name,
-    )
+    try:
+        send_message_via_smtp(
+            smtp_server=smtp_server,
+            to_email=to_email,
+            subject=f"[Test] {subject}",
+            html_content=html_content,
+            text_content=text_content,
+            from_email=from_email,
+            from_name=from_name,
+            # Test must not wait on IMAP Sent-folder sync (often times out on shared hosts).
+            save_to_sent=False,
+        )
+    except smtplib.SMTPException as exc:
+        raise ValidationError(
+            {"to_email": [f"SMTP could not send test email: {exc}"]},
+        ) from exc
+    except OSError as exc:
+        raise ValidationError(
+            {"to_email": [f"Could not connect to SMTP: {exc}"]},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — surface any unexpected send failure to UI
+        raise ValidationError(
+            {"to_email": [f"Test email failed: {exc}"]},
+        ) from exc
     return {"to_email": to_email, "from_email": from_email}
 
 
@@ -1064,9 +1241,6 @@ def process_queue_item(*, queue_item: EmailQueueItem):
         queue_item.save(update_fields=["status", "last_error", "updated_at"])
         return False
 
-    html_content = _personalize(campaign.html_content, subscriber)
-    text_content = _personalize(campaign.text_content, subscriber)
-    subject = _personalize(campaign.subject, subscriber)
     campaign_id = str(campaign.id)
 
     queue_item.status = EmailQueueItem.Status.SENDING
@@ -1082,6 +1256,32 @@ def process_queue_item(*, queue_item: EmailQueueItem):
 
         from_email = _resolve_from_email(campaign, smtp_server)
         from_name = _resolve_from_name(campaign, smtp_server)
+        swap_names = _sender_display_names_for_swap(
+            campaign=campaign,
+            smtp_server=smtp_server,
+        )
+
+        html_content = _personalize(
+            campaign.html_content,
+            subscriber,
+            sender_name=from_name,
+            sender_email=from_email,
+            sender_names_to_swap=swap_names,
+        )
+        text_content = _personalize(
+            campaign.text_content,
+            subscriber,
+            sender_name=from_name,
+            sender_email=from_email,
+            sender_names_to_swap=swap_names,
+        )
+        subject = _personalize(
+            campaign.subject,
+            subscriber,
+            sender_name=from_name,
+            sender_email=from_email,
+            sender_names_to_swap=swap_names,
+        )
 
         from tracking.context import set_campaign_tracking_base_url
         from tracking.services import resolve_send_tracking_base_url

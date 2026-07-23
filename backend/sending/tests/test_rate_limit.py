@@ -61,17 +61,14 @@ class RateLimitTestCase(TestCase):
         subscriber.lists.add(self.subscriber_list)
         return subscriber
 
-    def test_compute_send_interval_respects_one_minute_minimum(self):
+    def test_compute_send_interval_from_hourly_limit(self):
         self.assertEqual(compute_send_interval_seconds(self.smtp_server), 60)
 
         self.smtp_server.hourly_limit = 1
         self.assertEqual(compute_send_interval_seconds(self.smtp_server), 3600)
 
         self.smtp_server.hourly_limit = 120
-        self.assertEqual(
-            compute_send_interval_seconds(self.smtp_server),
-            MIN_SEND_INTERVAL_SECONDS,
-        )
+        self.assertEqual(compute_send_interval_seconds(self.smtp_server), 30)
 
     def test_can_send_email_respects_hourly_limit(self):
         self.smtp_server.hourly_limit = 1

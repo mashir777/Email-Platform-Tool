@@ -28,6 +28,7 @@ class SubscriberListSerializer(serializers.ModelSerializer):
     total_emails = serializers.SerializerMethodField()
     sent_emails = serializers.SerializerMethodField()
     waiting_emails = serializers.SerializerMethodField()
+    field_columns = serializers.SerializerMethodField()
 
     class Meta:
         model = SubscriberList
@@ -38,6 +39,8 @@ class SubscriberListSerializer(serializers.ModelSerializer):
             "source_filename",
             "is_active",
             "is_verified",
+            "csv_headers",
+            "field_columns",
             "subscriber_count",
             "deliverable_count",
             "total_emails",
@@ -50,6 +53,8 @@ class SubscriberListSerializer(serializers.ModelSerializer):
             "id",
             "source_filename",
             "is_verified",
+            "csv_headers",
+            "field_columns",
             "subscriber_count",
             "deliverable_count",
             "total_emails",
@@ -64,6 +69,11 @@ class SubscriberListSerializer(serializers.ModelSerializer):
 
     def get_deliverable_count(self, obj):
         return count_deliverable_subscribers(obj)
+
+    def get_field_columns(self, obj):
+        from subscribers.services import get_list_field_columns
+
+        return get_list_field_columns(obj)
 
     def _send_counts(self, obj):
         cache = getattr(self, "_send_counts_cache", None)
@@ -120,6 +130,7 @@ class SubscriberSerializer(serializers.ModelSerializer):
             "company",
             "industrial_company",
             "phone",
+            "custom_fields",
             "status",
             "send_status",
             "lists",
@@ -133,6 +144,7 @@ class SubscriberSerializer(serializers.ModelSerializer):
             "id",
             "lists",
             "full_name",
+            "custom_fields",
             "send_status",
             "subscribed_at",
             "unsubscribed_at",

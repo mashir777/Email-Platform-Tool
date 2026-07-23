@@ -19,6 +19,11 @@ class SubscriberList(models.Model):
     source_filename = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
     is_verified = models.BooleanField(default=False)
+    csv_headers = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=_("Original CSV column headers from the last import into this list."),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -60,7 +65,7 @@ class Subscriber(models.Model):
     company = models.CharField(max_length=255, blank=True)
     industrial_company = models.CharField(max_length=255, blank=True)
     custom_fields = models.JSONField(default=dict, blank=True)
-    phone = models.CharField(max_length=20, blank=True)
+    phone = models.CharField(max_length=100, blank=True)
     status = models.CharField(
         max_length=20,
         choices=Status.choices,

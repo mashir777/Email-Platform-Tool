@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from accounts.models import User
-from subscribers.models import Subscriber, SubscriberList
+from subscribers.models import ListMembership, Subscriber, SubscriberList
 
 
 class SubscriberAPITestCase(APITestCase):
@@ -208,17 +208,26 @@ class SubscriberAPITestCase(APITestCase):
         self.assertEqual(subscriber.lists.filter(name="Harry").count(), 1)
 
     def test_stats_endpoint(self):
-        Subscriber.objects.create(owner=self.user, email="a@example.com")
-        Subscriber.objects.create(
+        subscriber_list = SubscriberList.objects.create(
+            owner=self.user,
+            name="Stats list",
+        )
+        a = Subscriber.objects.create(owner=self.user, email="a@example.com")
+        b = Subscriber.objects.create(
             owner=self.user,
             email="b@example.com",
             status=Subscriber.Status.UNSUBSCRIBED,
         )
+        ListMembership.objects.create(list=subscriber_list, subscriber=a)
+        ListMembership.objects.create(list=subscriber_list, subscriber=b)
+        # Orphan (no list) must not inflate Total Emails
+        Subscriber.objects.create(owner=self.user, email="orphan@example.com")
 
         response = self.client.get(reverse("api:v1:subscribers:stats"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["data"]["stats"]["total"], 2)
         self.assertEqual(response.data["data"]["stats"]["unsubscribed"], 1)
+        self.assertEqual(response.data["data"]["stats"]["lists"], 1)
 
     def test_cannot_access_other_users_subscriber(self):
         subscriber = Subscriber.objects.create(

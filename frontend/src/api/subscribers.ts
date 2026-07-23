@@ -35,7 +35,7 @@ export async function fetchSubscribers(params?: {
   list_id?: string;
   status?: SubscriberStatus;
   search?: string;
-}): Promise<{ subscribers: Subscriber[] }> {
+}): Promise<{ subscribers: Subscriber[]; columns?: string[] }> {
   const query = new URLSearchParams();
   if (params?.list_id) query.set("list_id", params.list_id);
   if (params?.status) query.set("status", params.status);

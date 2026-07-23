@@ -76,20 +76,36 @@ def _count_recipients(subscriber_list):
 def _validate_from_email_for_owner(*, owner, from_email: str):
     if not from_email:
         return
-    smtp_server = get_default_smtp_server(owner)
-    if not smtp_server or not smtp_server.from_email:
+    from_domain = from_email.rsplit("@", 1)[-1].lower().strip()
+    if not from_domain:
         return
-    allowed_domain = smtp_server.from_email.rsplit("@", 1)[-1].lower()
-    from_domain = from_email.rsplit("@", 1)[-1].lower()
-    if from_domain != allowed_domain:
-        raise ValidationError(
-            {
-                "from_email": [
-                    f"Use an address on your sending domain (@{allowed_domain}), "
-                    f"not @{from_domain}. Your SMTP server blocks other domains.",
-                ],
-            },
-        )
+
+    # Multi-sender accounts use several domains — allow any active mailbox domain.
+    allowed_domains = {
+        (server.from_email or "").rsplit("@", 1)[-1].lower().strip()
+        for server in get_active_smtp_servers(owner)
+        if server.from_email and "@" in server.from_email
+    }
+    if not allowed_domains:
+        smtp_server = get_default_smtp_server(owner)
+        if smtp_server and smtp_server.from_email and "@" in smtp_server.from_email:
+            allowed_domains = {
+                smtp_server.from_email.rsplit("@", 1)[-1].lower().strip(),
+            }
+    if not allowed_domains:
+        return
+    if from_domain in allowed_domains:
+        return
+
+    domains_label = ", ".join(f"@{d}" for d in sorted(allowed_domains))
+    raise ValidationError(
+        {
+            "from_email": [
+                f"Use an address on one of your sender domains ({domains_label}), "
+                f"not @{from_domain}.",
+            ],
+        },
+    )
 
 
 def _default_from_fields(owner):
@@ -128,11 +144,7 @@ def create_campaign(*, owner, name, **fields):
 
 @transaction.atomic
 def update_campaign(*, campaign, **validated_data):
-    if campaign.status not in {Campaign.Status.DRAFT, Campaign.Status.SCHEDULED}:
-        raise ValidationError(
-            {"status": ["Only draft or scheduled campaigns can be edited."]},
-        )
-
+    # Allow edit after send / while waiting so content & senders can be updated.
     new_name = validated_data.get("name")
     if (
         new_name

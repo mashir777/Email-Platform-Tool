@@ -111,6 +111,10 @@ else:
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": env("SQLITE_PATH", default=str(BASE_DIR / "db.sqlite3")),
+            # Avoid "database is locked" under concurrent read + list delete.
+            "OPTIONS": {
+                "timeout": 60,
+            },
         }
     }
 

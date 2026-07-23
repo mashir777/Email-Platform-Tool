@@ -29,7 +29,9 @@ class SubscriberStatsView(APIView):
 
     @extend_schema(tags=["Subscribers"], summary="Get subscriber statistics")
     def get(self, request):
-        qs = services.get_owner_subscribers(request.user)
+        qs = services.get_owner_subscribers(request.user).filter(
+            memberships__isnull=False,
+        ).distinct()
         stats = {
             "total": qs.count(),
             "subscribed": qs.filter(status=Subscriber.Status.SUBSCRIBED).count(),
@@ -147,12 +149,15 @@ class SubscriberCollectionView(APIView):
             ) | qs.filter(last_name__icontains=search)
 
         serializer_context = {"owner": request.user}
+        columns: list[str] = []
         if list_id:
-            serializer_context["subscriber_list"] = get_object_or_404(
+            subscriber_list = get_object_or_404(
                 SubscriberList,
                 id=list_id,
                 owner=request.user,
             )
+            serializer_context["subscriber_list"] = subscriber_list
+            columns = services.get_list_field_columns(subscriber_list)
 
         return success_response(
             data={
@@ -161,6 +166,7 @@ class SubscriberCollectionView(APIView):
                     many=True,
                     context=serializer_context,
                 ).data,
+                "columns": columns,
             },
         )
 

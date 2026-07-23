@@ -6,6 +6,7 @@ import re
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 
 from subscribers.models import ListMembership, Subscriber, SubscriberList
@@ -13,13 +14,22 @@ from subscribers.validators import is_undeliverable_email, validate_subscriber_e
 
 
 def _csv_row_get(row: dict, *keys: str) -> str:
-    """Read a CSV cell by exact or case-insensitive header (supports spaced headers)."""
+    """Read a CSV cell by exact, case-insensitive, or normalized header (First name → first_name)."""
     for key in keys:
         if key in row and row[key] is not None and str(row[key]).strip():
             return str(row[key]).strip()
     lowered = {(k or "").strip().lower(): v for k, v in row.items()}
     for key in keys:
         value = lowered.get(key.strip().lower())
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    by_norm = {
+        _normalize_merge_key(k or ""): v
+        for k, v in row.items()
+        if k is not None and str(k).strip()
+    }
+    for key in keys:
+        value = by_norm.get(_normalize_merge_key(key))
         if value is not None and str(value).strip():
             return str(value).strip()
     return ""
@@ -30,13 +40,135 @@ def _csv_basename(csv_file) -> str:
     return os.path.basename(name.replace("\\", "/")) or "import.csv"
 
 
-def _csv_custom_fields(row: dict) -> dict[str, str]:
-    """Keep every non-empty CSV cell so any header can be used in a message."""
-    return {
-        str(header).strip(): str(value).strip()
-        for header, value in row.items()
-        if header is not None and value is not None and str(value).strip()
-    }
+def _normalize_merge_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
+
+
+def _csv_custom_fields(row: dict, fieldnames=None) -> dict[str, str]:
+    """
+    Save every CSV column so message placeholders like {{khush}} / {{First Name}} work.
+    Stores both original header and normalized key → same value.
+    """
+    headers = list(fieldnames or row.keys())
+    out: dict[str, str] = {}
+    for header in headers:
+        if header is None:
+            continue
+        raw = str(header).strip()
+        if not raw:
+            continue
+        value = row.get(header)
+        if value is None and raw in row:
+            value = row.get(raw)
+        text = "" if value is None else str(value).strip()
+        out[raw] = text
+        norm = _normalize_merge_key(raw)
+        if norm:
+            out[norm] = text
+    return out
+
+
+def _csv_header_labels(fieldnames) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for header in fieldnames or []:
+        if header is None:
+            continue
+        raw = str(header).strip()
+        if not raw:
+            continue
+        key = raw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(raw)
+    return labels
+
+
+def _prefer_column_label(preferred: dict[str, str], *, norm: str, label: str) -> None:
+    if not norm or not label:
+        return
+    existing = preferred.get(norm)
+    if not existing:
+        preferred[norm] = label
+        return
+    existing_is_snake = existing == norm or not re.search(r"[A-Z\s]", existing)
+    label_is_human = bool(re.search(r"[A-Z\s]", label)) and label != norm
+    if existing_is_snake and label_is_human:
+        preferred[norm] = label
+
+
+def get_list_field_columns(subscriber_list) -> list[str]:
+    """
+    CSV columns to show in the emails table (everything except email / list).
+    Prefers saved import headers, then samples subscriber custom_fields + model fields.
+    """
+    skip = {"email", "e_mail", "list"}
+    preferred: dict[str, str] = {}
+
+    headers = list(getattr(subscriber_list, "csv_headers", None) or [])
+    if headers:
+        for header in headers:
+            norm = _normalize_merge_key(header)
+            if norm in skip:
+                continue
+            _prefer_column_label(preferred, norm=norm, label=str(header).strip())
+    else:
+        sample = (
+            subscriber_list.subscribers.exclude(custom_fields={})
+            .values_list("custom_fields", flat=True)[:300]
+        )
+        for custom_fields in sample:
+            for key in (custom_fields or {}):
+                norm = _normalize_merge_key(key)
+                if norm in skip:
+                    continue
+                _prefer_column_label(preferred, norm=norm, label=str(key).strip())
+
+    qs = subscriber_list.subscribers
+    if qs.exclude(first_name="").exists():
+        _prefer_column_label(preferred, norm="first_name", label="First name")
+    if qs.exclude(last_name="").exists():
+        _prefer_column_label(preferred, norm="last_name", label="Last name")
+    if qs.exclude(company="").exists():
+        _prefer_column_label(preferred, norm="company", label="Company")
+    if qs.exclude(industrial_company="").exists():
+        _prefer_column_label(preferred, norm="industrial_company", label="Industrial Company")
+    if qs.exclude(phone="").exists():
+        _prefer_column_label(preferred, norm="phone", label="Phone")
+
+    order = [
+        "first_name",
+        "last_name",
+        "job_title",
+        "jobtitle",
+        "company",
+        "company_name",
+        "website",
+        "linkedin_url",
+        "linkedin",
+        "phone",
+        "company_url",
+        "industrial_company",
+        "state",
+    ]
+    return [
+        label
+        for norm, label in sorted(
+            preferred.items(),
+            key=lambda item: (
+                order.index(item[0]) if item[0] in order else 999,
+                item[1].lower(),
+            ),
+        )
+    ]
+
+
+def _store_list_csv_headers(*, list_ids: set[str], fieldnames) -> None:
+    headers = _csv_header_labels(fieldnames)
+    if not headers or not list_ids:
+        return
+    SubscriberList.objects.filter(id__in=list(list_ids)).update(csv_headers=headers)
 
 
 def _list_name_from_filename(filename: str) -> str:
@@ -156,9 +288,49 @@ def update_list(*, subscriber_list, **validated_data):
     return subscriber_list
 
 
-@transaction.atomic
 def delete_list(*, subscriber_list):
-    subscriber_list.delete()
+    """Delete list and any emails that are no longer on any list."""
+    import time
+
+    from django.db.utils import OperationalError
+
+    owner = subscriber_list.owner
+    list_id = subscriber_list.id
+    member_ids = list(
+        ListMembership.objects.filter(list_id=list_id).values_list(
+            "subscriber_id",
+            flat=True,
+        ),
+    )
+
+    for attempt in range(1, 6):
+        try:
+            with transaction.atomic():
+                # Drop memberships first so SQLite holds a shorter write lock.
+                ListMembership.objects.filter(list_id=list_id).delete()
+                SubscriberList.objects.filter(id=list_id).delete()
+            break
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt >= 5:
+                raise
+            time.sleep(0.35 * attempt)
+    else:
+        raise OperationalError("database is locked")
+
+    if not member_ids:
+        return
+
+    for attempt in range(1, 6):
+        try:
+            with transaction.atomic():
+                Subscriber.objects.filter(owner=owner, id__in=member_ids).annotate(
+                    membership_count=Count("memberships"),
+                ).filter(membership_count=0).delete()
+            break
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt >= 5:
+                raise
+            time.sleep(0.35 * attempt)
 
 
 @transaction.atomic
@@ -364,14 +536,30 @@ def import_subscribers_from_csv(*, owner, csv_file, list_id=None):
             rejected += 1
             continue
 
-        first_name = _csv_row_get(row, "first_name", "firstname", "name")
-        last_name = _csv_row_get(row, "last_name", "lastname")
+        first_name = _csv_row_get(
+            row,
+            "first_name",
+            "firstname",
+            "First name",
+            "First Name",
+            "name",
+        )
+        last_name = _csv_row_get(
+            row,
+            "last_name",
+            "lastname",
+            "Last name",
+            "Last Name",
+        )
         company = _csv_row_get(
             row,
             "Company",
             "company",
             "Company Name",
             "company_name",
+            "company name",
+            "compny name",
+            "CompanyName",
         )
         industrial_company = _csv_row_get(
             row,
@@ -380,8 +568,15 @@ def import_subscribers_from_csv(*, owner, csv_file, list_id=None):
             "IndustrialCompany",
             "industry",
         )
-        phone = _csv_row_get(row, "phone")
-        custom_fields = _csv_custom_fields(row)
+        phone = _csv_row_get(
+            row,
+            "phone",
+            "Phone",
+            "Phone Number",
+            "phone_number",
+            "mobile",
+        )[:100]
+        custom_fields = _csv_custom_fields(row, reader.fieldnames)
 
         subscriber, was_created = Subscriber.objects.get_or_create(
             owner=owner,
@@ -461,6 +656,8 @@ def import_subscribers_from_csv(*, owner, csv_file, list_id=None):
             owner=owner,
             id__in=list(touched_lists),
         ).order_by("created_at").first()
+
+    _store_list_csv_headers(list_ids=touched_lists, fieldnames=reader.fieldnames)
 
     return {
         "created": created,

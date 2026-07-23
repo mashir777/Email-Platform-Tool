@@ -345,10 +345,10 @@ export function MessagesPage() {
                   placeholder="Write the email message for this version. You can update it later."
                 />
                 <p className="mt-2 text-xs text-slate-500">
-                  Automatically uses CSV data. Examples: {"{{name}}"}, {"[First Name]"},{" "}
-                  {"{{Company Name}}"}, {"{{Industrial Company}}"}, or any CSV header such
-                  as {"{{Job Title}}"} and {"[City]"}. Keep blank lines between paragraphs
-                  for a clean email layout.
+                  List CSV ke saare columns use ho sakte hain. Write {"{{first_name}}"},{" "}
+                  {"{{Company}}"}, {"{{khush}}"}, or any header from your CSV inside{" "}
+                  {"{{ }}"}. Signature ke liye {"{{sender_name}}"} — jo Sender select hoga
+                  usi ka name aayega.
                 </p>
               </div>
 

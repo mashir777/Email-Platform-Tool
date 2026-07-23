@@ -7,10 +7,172 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import type { Subscriber, SubscriberList, SubscriberStats } from "@/types/subscribers";
 
+function normalizeFieldKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function pickCustomField(fields: Record<string, string> | undefined, ...keys: string[]): string {
+  if (!fields) return "";
+  for (const key of keys) {
+    const direct = fields[key];
+    if (direct != null && String(direct).trim()) return String(direct).trim();
+  }
+  const byNorm = new Map<string, string>();
+  for (const [key, value] of Object.entries(fields)) {
+    const norm = normalizeFieldKey(key);
+    if (norm && value != null && String(value).trim() && !byNorm.has(norm)) {
+      byNorm.set(norm, String(value).trim());
+    }
+  }
+  for (const key of keys) {
+    const hit = byNorm.get(normalizeFieldKey(key));
+    if (hit) return hit;
+  }
+  return "";
+}
+
+function subscriberDisplayName(sub: Subscriber): string {
+  if (sub.full_name?.trim()) return sub.full_name.trim();
+  const first =
+    sub.first_name?.trim() ||
+    pickCustomField(sub.custom_fields, "first_name", "First name", "First Name", "firstname");
+  const last =
+    sub.last_name?.trim() ||
+    pickCustomField(sub.custom_fields, "last_name", "Last name", "Last Name", "lastname");
+  return `${first} ${last}`.trim() || "—";
+}
+
+function collectCsvColumns(subscribers: Subscriber[]): string[] {
+  const preferred = new Map<string, string>();
+  const skip = new Set(["email", "e_mail"]);
+  const preferLabel = (norm: string, label: string) => {
+    if (!norm || skip.has(norm)) return;
+    const existing = preferred.get(norm);
+    if (!existing) {
+      preferred.set(norm, label);
+      return;
+    }
+    const existingIsSnake = existing === norm || !/[A-Z\s]/.test(existing);
+    const labelIsHuman = /[A-Z\s]/.test(label) && label !== norm;
+    if (existingIsSnake && labelIsHuman) preferred.set(norm, label);
+  };
+
+  for (const sub of subscribers) {
+    for (const key of Object.keys(sub.custom_fields || {})) {
+      preferLabel(normalizeFieldKey(key), key.trim());
+    }
+    if (sub.first_name?.trim()) preferLabel("first_name", "First name");
+    if (sub.last_name?.trim()) preferLabel("last_name", "Last name");
+    if (sub.company?.trim()) preferLabel("company", "Company");
+    if (sub.phone?.trim()) preferLabel("phone", "Phone");
+    if (sub.industrial_company?.trim()) {
+      preferLabel("industrial_company", "Industrial Company");
+    }
+  }
+
+  const order = [
+    "first_name",
+    "last_name",
+    "job_title",
+    "jobtitle",
+    "company",
+    "company_name",
+    "website",
+    "linkedin_url",
+    "linkedin",
+    "phone",
+    "company_url",
+    "state",
+    "industrial_company",
+  ];
+  return [...preferred.entries()]
+    .sort((a, b) => {
+      const ia = order.indexOf(a[0]);
+      const ib = order.indexOf(b[0]);
+      if (ia >= 0 || ib >= 0) return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+      return a[1].localeCompare(b[1]);
+    })
+    .map(([, label]) => label);
+}
+
+function subscriberFieldValue(sub: Subscriber, column: string): string {
+  const norm = normalizeFieldKey(column);
+  if (norm === "first_name") {
+    return (
+      sub.first_name?.trim() ||
+      pickCustomField(sub.custom_fields, column, "first_name", "First name") ||
+      "—"
+    );
+  }
+  if (norm === "last_name") {
+    return (
+      sub.last_name?.trim() ||
+      pickCustomField(sub.custom_fields, column, "last_name", "Last name") ||
+      "—"
+    );
+  }
+  if (norm === "phone") {
+    return sub.phone?.trim() || pickCustomField(sub.custom_fields, column, "phone") || "—";
+  }
+  if (norm === "company" || norm === "company_name") {
+    return (
+      sub.company?.trim() ||
+      pickCustomField(sub.custom_fields, column, "company", "Company", "Company Name", "company_name") ||
+      "—"
+    );
+  }
+  if (norm === "job_title" || norm === "jobtitle") {
+    return (
+      pickCustomField(
+        sub.custom_fields,
+        column,
+        "Jobtitle",
+        "Job Title",
+        "job_title",
+        "jobtitle",
+      ) || "—"
+    );
+  }
+  if (norm === "website") {
+    return pickCustomField(sub.custom_fields, column, "Website", "website") || "—";
+  }
+  if (norm === "linkedin_url" || norm === "linkedin") {
+    return (
+      pickCustomField(
+        sub.custom_fields,
+        column,
+        "Linkedin url",
+        "LinkedIn URL",
+        "linkedin_url",
+        "linkedin",
+      ) || "—"
+    );
+  }
+  if (norm === "company_url") {
+    return (
+      pickCustomField(sub.custom_fields, column, "company url", "Company URL", "company_url") ||
+      "—"
+    );
+  }
+  if (norm === "industrial_company") {
+    return (
+      sub.industrial_company?.trim() ||
+      pickCustomField(sub.custom_fields, column, "industrial_company") ||
+      "—"
+    );
+  }
+  return pickCustomField(sub.custom_fields, column, norm) || "—";
+}
+
 export function SubscribersPage() {
   const [stats, setStats] = useState<SubscriberStats | null>(null);
   const [lists, setLists] = useState<SubscriberList[]>([]);
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
+  const [listFieldColumns, setListFieldColumns] = useState<string[]>([]);
   const [selectedListId, setSelectedListId] = useState<string>("");
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -34,6 +196,14 @@ export function SubscribersPage() {
     [lists, selectedListId],
   );
 
+  const csvColumns = useMemo(() => {
+    if (listFieldColumns.length > 0) return listFieldColumns;
+    if (selectedList?.field_columns && selectedList.field_columns.length > 0) {
+      return selectedList.field_columns;
+    }
+    return collectCsvColumns(subscribers);
+  }, [listFieldColumns, selectedList, subscribers]);
+
   const loadLists = useCallback(async () => {
     const [statsRes, listsRes] = await Promise.all([
       subscribersApi.fetchStats(),
@@ -47,6 +217,7 @@ export function SubscribersPage() {
   const loadEmails = useCallback(async (listId: string, searchValue: string) => {
     if (!listId) {
       setSubscribers([]);
+      setListFieldColumns([]);
       return;
     }
     setIsEmailsLoading(true);
@@ -56,6 +227,7 @@ export function SubscribersPage() {
         search: searchValue || undefined,
       });
       setSubscribers(subsRes.subscribers);
+      setListFieldColumns(subsRes.columns || []);
     } finally {
       setIsEmailsLoading(false);
     }
@@ -406,10 +578,10 @@ export function SubscribersPage() {
           )}
 
           <p className="mb-3 text-xs text-slate-500">
-            CSV columns: <span className="font-mono">email</span>, optional{" "}
-            <span className="font-mono">name</span>, <span className="font-mono">Company</span>,{" "}
-            <span className="font-mono">Industrial Company</span>, <span className="font-mono">list</span>.
-            <span className="font-mono"> Filter CSV</span> imports then filters with Reacher
+            CSV ke saare columns import hote hain aur list table mein dikhte hain (First name,
+            Jobtitle, Website, Linkedin url, …). Message mein {"{{Jobtitle}}"} / {"{{Website}}"}{" "}
+            likho — har email ke row se value pick hogi.{" "}
+            <span className="font-mono">Filter CSV</span> imports then filters with Reacher
             (keeps real emails, removes spam / no-inbox). Or import first, then{" "}
             <span className="font-mono">Verify List</span>. Lists show Verified / Not verified.
           </p>
@@ -618,7 +790,15 @@ export function SubscribersPage() {
                           />
                         </th>
                         <th className="pb-3 pr-4 font-medium">Email</th>
-                        <th className="pb-3 pr-4 font-medium">Name</th>
+                        {csvColumns.length === 0 ? (
+                          <th className="pb-3 pr-4 font-medium">Name</th>
+                        ) : (
+                          csvColumns.map((column) => (
+                            <th key={column} className="pb-3 pr-4 font-medium whitespace-nowrap">
+                              {column}
+                            </th>
+                          ))
+                        )}
                         <th className="pb-3 pr-4 font-medium">Send status</th>
                         <th className="pb-3 font-medium" />
                       </tr>
@@ -641,9 +821,20 @@ export function SubscribersPage() {
                             />
                           </td>
                           <td className="py-3 pr-4 text-slate-800">{sub.email}</td>
-                          <td className="py-3 pr-4 text-slate-400">
-                            {sub.full_name || "—"}
-                          </td>
+                          {csvColumns.length === 0 ? (
+                            <td className="py-3 pr-4 text-slate-600">
+                              {subscriberDisplayName(sub)}
+                            </td>
+                          ) : (
+                            csvColumns.map((column) => (
+                              <td
+                                key={`${sub.id}-${column}`}
+                                className="py-3 pr-4 text-slate-600 whitespace-nowrap"
+                              >
+                                {subscriberFieldValue(sub, column)}
+                              </td>
+                            ))
+                          )}
                           <td className="py-3 pr-4">
                             {sub.send_status === "sent" ? (
                               <span className="text-emerald-600">Sent</span>
