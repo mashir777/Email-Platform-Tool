@@ -288,6 +288,35 @@ def _pick_smtp_server(
     return servers[sender_index]
 
 
+def _campaign_batch_cap(campaign: Campaign, servers: list[SmtpServer]) -> int:
+    """Exact send count for one pass: emails_per_sender × selected senders."""
+    per_sender = getattr(campaign, "emails_per_sender", None) or 1
+    return max(1, int(per_sender)) * len(servers)
+
+
+def _demote_excess_pending(
+    *,
+    campaign: Campaign,
+    allowed_subscriber_ids: set,
+    smtp_server: SmtpServer,
+) -> None:
+    """Any PENDING beyond this pass's cap must not send (strict limit)."""
+    extras = campaign.queue_items.filter(
+        status__in=[
+            EmailQueueItem.Status.PENDING,
+            EmailQueueItem.Status.SENDING,
+            EmailQueueItem.Status.FAILED,
+        ],
+    ).exclude(subscriber_id__in=allowed_subscriber_ids).select_related("subscriber")
+    for item in extras:
+        _skip_over_send_limit(
+            campaign=campaign,
+            subscriber=item.subscriber,
+            smtp_server=smtp_server,
+            existing=item,
+        )
+
+
 def _skip_over_send_limit(
     *,
     campaign: Campaign,
@@ -614,9 +643,15 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
     campaign.recipient_count = recipient_count
     campaign.save(update_fields=["status", "recipient_count", "updated_at"])
 
-    queued = 0
-    send_index = 0
-    emails_per_sender = getattr(campaign, "emails_per_sender", None)
+    emails_per_sender = getattr(campaign, "emails_per_sender", None) or 1
+    cap = _campaign_batch_cap(campaign, servers)
+
+    existing_by_subscriber = {
+        item.subscriber_id: item
+        for item in campaign.queue_items.select_related("subscriber")
+    }
+
+    waiting: list[Subscriber] = []
     for subscriber in recipients:
         if subscriber.id in already_sent_ids:
             EmailQueueItem.objects.get_or_create(
@@ -631,11 +666,23 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
                 },
             )
             continue
-
-        item = EmailQueueItem.objects.filter(
-            campaign=campaign,
-            subscriber=subscriber,
-        ).first()
+        if is_undeliverable_email(subscriber.email):
+            EmailQueueItem.objects.get_or_create(
+                campaign=campaign,
+                subscriber=subscriber,
+                defaults={
+                    "owner": campaign.owner,
+                    "smtp_server": servers[0],
+                    "to_email": subscriber.email,
+                    "status": EmailQueueItem.Status.SKIPPED,
+                    "last_error": (
+                        "Test/fake address (@example.com etc.) cannot receive mail. "
+                        "Use a real Gmail address."
+                    ),
+                },
+            )
+            continue
+        item = existing_by_subscriber.get(subscriber.id)
         if (
             item is not None
             and item.status == EmailQueueItem.Status.SENT
@@ -645,18 +692,26 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             )
         ):
             continue
+        waiting.append(subscriber)
 
+    # Strict: only N × senders emails become PENDING this pass — never one extra.
+    batch = waiting[:cap]
+    remainder = waiting[cap:]
+    allowed_ids = {subscriber.id for subscriber in batch}
+
+    queued = 0
+    for send_index, subscriber in enumerate(batch):
         assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
         if assigned_server is None:
             _skip_over_send_limit(
                 campaign=campaign,
                 subscriber=subscriber,
                 smtp_server=servers[0],
-                existing=item,
+                existing=existing_by_subscriber.get(subscriber.id),
             )
             continue
-        send_index += 1
 
+        item = existing_by_subscriber.get(subscriber.id)
         if item is None:
             EmailQueueItem.objects.create(
                 owner=campaign.owner,
@@ -669,36 +724,43 @@ def queue_campaign(*, campaign: Campaign, smtp_server: SmtpServer | None = None)
             queued += 1
             continue
 
-        updates = []
-        was_sent = item.status == EmailQueueItem.Status.SENT
-        if item.status in {
-            EmailQueueItem.Status.FAILED,
-            EmailQueueItem.Status.SKIPPED,
-            EmailQueueItem.Status.SENT,
-        }:
-            item.status = EmailQueueItem.Status.PENDING
-            item.last_error = ""
-            updates.extend(["status", "last_error"])
-            if item.sent_at is not None:
-                item.sent_at = None
-                updates.append("sent_at")
-            if was_sent:
-                queued += 1
-        if item.smtp_server_id != assigned_server.id:
-            item.smtp_server = assigned_server
-            updates.append("smtp_server")
-        if item.to_email != subscriber.email:
-            item.to_email = subscriber.email
-            updates.append("to_email")
-        if updates:
-            item.save(update_fields=[*updates, "updated_at"])
+        item.status = EmailQueueItem.Status.PENDING
+        item.last_error = ""
+        item.smtp_server = assigned_server
+        item.to_email = subscriber.email
+        item.sent_at = None
+        item.save(
+            update_fields=[
+                "status",
+                "last_error",
+                "smtp_server",
+                "to_email",
+                "sent_at",
+                "updated_at",
+            ],
+        )
+        queued += 1
+
+    for subscriber in remainder:
+        _skip_over_send_limit(
+            campaign=campaign,
+            subscriber=subscriber,
+            smtp_server=servers[0],
+            existing=existing_by_subscriber.get(subscriber.id),
+        )
+
+    _demote_excess_pending(
+        campaign=campaign,
+        allowed_subscriber_ids=allowed_ids,
+        smtp_server=servers[0],
+    )
 
     return queued
 
 
 @transaction.atomic
 def requeue_campaign_items(*, campaign: Campaign):
-    """Reset failed/pending items and reassign SMTP servers (list-order batches)."""
+    """Reset failed/pending items within the strict N×senders cap for this pass."""
     _validate_campaign_for_send(campaign, allow_sending=True)
 
     servers = resolve_campaign_smtp_servers(campaign)
@@ -711,26 +773,47 @@ def requeue_campaign_items(*, campaign: Campaign):
     campaign.recipient_count = len(recipients)
     campaign.save(update_fields=["recipient_count", "updated_at"])
 
+    membership_added_at = _list_membership_added_at_by_subscriber(
+        subscriber_list=campaign.subscriber_list,
+    )
+    already_sent_ids = _subscribers_sent_since_list_import(
+        owner=campaign.owner,
+        subscriber_list=campaign.subscriber_list,
+        subscriber_ids=[subscriber.id for subscriber in recipients],
+        membership_added_at=membership_added_at,
+    )
+
+    waiting = [
+        subscriber
+        for subscriber in recipients
+        if subscriber.id not in already_sent_ids
+        and not is_undeliverable_email(subscriber.email)
+    ]
+    emails_per_sender = getattr(campaign, "emails_per_sender", None) or 1
+    cap = _campaign_batch_cap(campaign, servers)
+    batch = waiting[:cap]
+    remainder = waiting[cap:]
+    allowed_ids = {subscriber.id for subscriber in batch}
+
     existing_by_subscriber = {
         item.subscriber_id: item
         for item in campaign.queue_items.select_related("subscriber")
     }
-    emails_per_sender = getattr(campaign, "emails_per_sender", None)
-    send_index = 0
     requeued = 0
 
-    for subscriber in recipients:
+    for send_index, subscriber in enumerate(batch):
+        assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
+        if assigned_server is None:
+            _skip_over_send_limit(
+                campaign=campaign,
+                subscriber=subscriber,
+                smtp_server=servers[0],
+                existing=existing_by_subscriber.get(subscriber.id),
+            )
+            continue
+
         item = existing_by_subscriber.get(subscriber.id)
         if item is None:
-            assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
-            if assigned_server is None:
-                _skip_over_send_limit(
-                    campaign=campaign,
-                    subscriber=subscriber,
-                    smtp_server=servers[0],
-                )
-                continue
-            send_index += 1
             EmailQueueItem.objects.create(
                 owner=campaign.owner,
                 campaign=campaign,
@@ -742,22 +825,9 @@ def requeue_campaign_items(*, campaign: Campaign):
             requeued += 1
             continue
 
-        if item.status not in {
-            EmailQueueItem.Status.PENDING,
-            EmailQueueItem.Status.FAILED,
-        }:
+        if item.status == EmailQueueItem.Status.SENT:
             continue
 
-        assigned_server = _pick_smtp_server(servers, send_index, emails_per_sender)
-        if assigned_server is None:
-            _skip_over_send_limit(
-                campaign=campaign,
-                subscriber=subscriber,
-                smtp_server=servers[0],
-                existing=item,
-            )
-            continue
-        send_index += 1
         item.smtp_server = assigned_server
         item.status = EmailQueueItem.Status.PENDING
         item.last_error = ""
@@ -765,6 +835,20 @@ def requeue_campaign_items(*, campaign: Campaign):
             update_fields=["smtp_server", "status", "last_error", "updated_at"],
         )
         requeued += 1
+
+    for subscriber in remainder:
+        _skip_over_send_limit(
+            campaign=campaign,
+            subscriber=subscriber,
+            smtp_server=servers[0],
+            existing=existing_by_subscriber.get(subscriber.id),
+        )
+
+    _demote_excess_pending(
+        campaign=campaign,
+        allowed_subscriber_ids=allowed_ids,
+        smtp_server=servers[0],
+    )
 
     if campaign.status != Campaign.Status.SENDING:
         campaign.status = Campaign.Status.SENDING
@@ -809,9 +893,10 @@ def extend_campaign_for_send(*, campaign: Campaign) -> int:
         return 0
 
     emails_per_sender = getattr(campaign, "emails_per_sender", None) or 1
-    batch_size = emails_per_sender * len(servers)
+    batch_size = _campaign_batch_cap(campaign, servers)
     batch = waiting[:batch_size]
     remainder = waiting[batch_size:]
+    allowed_ids = {subscriber.id for subscriber in batch}
 
     existing_by_subscriber = {
         item.subscriber_id: item
@@ -868,6 +953,12 @@ def extend_campaign_for_send(*, campaign: Campaign) -> int:
             smtp_server=servers[0],
             existing=existing_by_subscriber.get(subscriber.id),
         )
+
+    _demote_excess_pending(
+        campaign=campaign,
+        allowed_subscriber_ids=allowed_ids,
+        smtp_server=servers[0],
+    )
 
     for subscriber in recipients:
         if subscriber.id in already_sent_ids:
